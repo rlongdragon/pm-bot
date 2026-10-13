@@ -14,6 +14,8 @@ export interface Active {
   label: string;
   startedAt: number;
   reportChannelId: string;
+  /** 下指令的人；頻道貼不出去時改私訊他 */
+  invokerId?: string;
   state: string;
   stop(): Promise<void>;
 }
@@ -21,6 +23,7 @@ export interface Active {
 export interface Finished {
   projectId: string;
   reportChannelId: string;
+  invokerId?: string;
   kind: "voice" | "meet";
   label: string;
   dir: string;
@@ -53,7 +56,7 @@ function busy(projectId: string, guildId?: string) {
   }
 }
 
-export async function startVoice(projectId: string, channel: VoiceBasedChannel, reportChannelId: string): Promise<Active> {
+export async function startVoice(projectId: string, channel: VoiceBasedChannel, reportChannelId: string, invokerId?: string): Promise<Active> {
   busy(projectId, channel.guild.id);
   const me = channel.guild.members.me;
   const perms = me ? channel.permissionsFor(me) : null;
@@ -66,6 +69,7 @@ export async function startVoice(projectId: string, channel: VoiceBasedChannel, 
     label: `🔊${channel.name}`,
     startedAt: Date.now(),
     reportChannelId,
+    invokerId,
     state: "連線中",
     stop: async () => {
       await rec.stop();
@@ -74,7 +78,7 @@ export async function startVoice(projectId: string, channel: VoiceBasedChannel, 
   active.set(projectId, a);
   rec.onStopped = (s) => {
     active.delete(projectId);
-    onFinished({ projectId, reportChannelId, kind: "voice", label: a.label, dir: s.dir, manifest: s.manifest });
+    onFinished({ projectId, reportChannelId, invokerId, kind: "voice", label: a.label, dir: s.dir, manifest: s.manifest });
   };
   try {
     await rec.start();
@@ -103,7 +107,7 @@ export function onVoiceStateUpdate(oldState: VoiceState) {
 const here = fileURLToPath(import.meta.url);
 const runner = path.join(path.dirname(here), "meet-runner" + path.extname(here)); // dist 是 .js，tsx 是 .ts
 
-export function startMeet(projectId: string, url: string, reportChannelId: string): Active {
+export function startMeet(projectId: string, url: string, reportChannelId: string, invokerId?: string): Active {
   busy(projectId);
   if (!/^https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(url)) throw new Error("要是 https://meet.google.com/xxx-yyyy-zzz 這種連結");
   const child: ChildProcess = spawn(process.execPath, [...process.execArgv, runner, projectId, url], {
@@ -120,6 +124,7 @@ export function startMeet(projectId: string, url: string, reportChannelId: strin
     label: `Google Meet ${code}`,
     startedAt: Date.now(),
     reportChannelId,
+    invokerId,
     state: "啟動中",
     stop: async () => {
       if (child.exitCode !== null) return;
@@ -155,7 +160,7 @@ export function startMeet(projectId: string, url: string, reportChannelId: strin
         } else if (m.type === "done") {
           done = true;
           active.delete(projectId);
-          onFinished({ projectId, reportChannelId, kind: "meet", label: a.label, dir: m.dir, manifest: m.manifest, error: m.error });
+          onFinished({ projectId, reportChannelId, invokerId, kind: "meet", label: a.label, dir: m.dir, manifest: m.manifest, error: m.error });
         } else if (m.type === "error") {
           a.state = m.message;
         }
@@ -166,7 +171,7 @@ export function startMeet(projectId: string, url: string, reportChannelId: strin
   child.on("exit", (code) => {
     if (done) return;
     active.delete(projectId);
-    onFinished({ projectId, reportChannelId, kind: "meet", label: a.label, dir, error: a.state && code ? `錄音程序異常結束（${code}）：${a.state}` : null });
+    onFinished({ projectId, reportChannelId, invokerId, kind: "meet", label: a.label, dir, error: a.state && code ? `錄音程序異常結束（${code}）：${a.state}` : null });
   });
   return a;
 }

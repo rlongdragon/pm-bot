@@ -177,18 +177,26 @@ async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label:
 
 /* ---------- 會議錄音 ---------- */
 
-async function say(channelId: string, content: string) {
+/** 貼到頻道；bot 在那個頻道沒權限時改私訊下指令的人 */
+async function say(channelId: string, content: string, fallbackUserId?: string) {
   const ch = await client.channels.fetch(channelId).catch(() => null);
-  if (!ch || !ch.isTextBased() || !("send" in ch)) {
-    console.warn(`[meet] 無法在 ${channelId} 發訊息：${content.slice(0, 80)}`);
-    return;
+  if (ch && ch.isTextBased() && "send" in ch) {
+    const ok = await ch.send({ content, allowedMentions: { users: [] } }).then(() => true, (e) => (console.warn(`[say] ${channelId}: ${e.message}`), false));
+    if (ok) return;
   }
-  await ch.send({ content, allowedMentions: { users: [] } }).catch((e) => console.warn(`[meet] send failed: ${e.message}`));
+  if (fallbackUserId) {
+    const u = await client.users.fetch(fallbackUserId).catch(() => null);
+    const ok = await u
+      ?.send(`（我在 <#${channelId}> 沒有發言權限，改私訊你）\n${content}`)
+      .then(() => true, (e) => (console.warn(`[say] DM ${fallbackUserId}: ${e.message}`), false));
+    if (ok) return;
+  }
+  console.warn(`[say] 發不出去：${content.slice(0, 80)}`);
 }
 
 meeting.setHandlers({
   status: (a, msg) => {
-    if (/已要求加入|開始錄音/.test(msg)) void say(a.reportChannelId, `🎙 ${a.label}：${msg}`);
+    if (/已要求加入|開始錄音/.test(msg)) void say(a.reportChannelId, `🎙 ${a.label}：${msg}`, a.invokerId);
   },
   finished: (f) => void onMeetingFinished(f),
 });
@@ -201,6 +209,7 @@ async function onMeetingFinished(f: meeting.Finished) {
     await say(
       f.reportChannelId,
       f.error ? `⚠️ ${f.label} 沒有錄到：${f.error}` : `⏹ ${f.label} 停止了，還沒錄到聲音（可能還在等主持人放行，或沒有人講話）。`,
+      f.invokerId,
     );
     return;
   }
@@ -227,6 +236,7 @@ async function onMeetingFinished(f: meeting.Finished) {
     f.reportChannelId,
     `⏹ ${f.label} 錄完：長度 ${dur}，參與者 ${names}。${rawNote}\n` +
       `音檔在伺服器 \`${rel}/mixed.ogg\`${m.platform === "discord" ? "，另有每人一軌" : ""}。文字稿還沒自動產生，有逐字稿可以用 \`/note\` 上傳。`,
+    f.invokerId,
   );
 }
 
@@ -605,11 +615,11 @@ async function cmdMeet(i: ChatInputCommandInteraction) {
     const ch = opt ? i.guild.channels.cache.get(opt.id) : i.member.voice.channel;
     if (!ch || !ch.isVoiceBased()) return i.reply({ content: "你要先進語音頻道，或在指令裡指定一個語音頻道", flags: MessageFlags.Ephemeral });
     await i.deferReply();
-    const a = await meeting.startVoice(p.id, ch, i.channelId);
+    const a = await meeting.startVoice(p.id, ch, i.channelId, i.user.id);
     return i.editReply(`🔴 開始錄 ${a.label}，每人一軌。\`/meet stop\` 或所有人離開後自動停止，錄完會貼在這裡。` + permWarning(i));
   }
   if (sub === "google") {
-    const a = meeting.startMeet(p.id, i.options.getString("url", true).trim(), i.channelId);
+    const a = meeting.startMeet(p.id, i.options.getString("url", true).trim(), i.channelId, i.user.id);
     return i.reply(
       `🟡 正在加入 ${a.label}，名字是「${config.meetBotName}」。主持人放行後開始錄，\`/meet stop\` 停止。\n` +
         `會議要求 Google 帳號登入的話訪客進不去，我會在這裡回報。` +
