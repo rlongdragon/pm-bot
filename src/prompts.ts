@@ -38,3 +38,15 @@ ${pending.length ? `\n1. pending.md 裡有 ${pending.length} 筆之前沒處理�
 ${pending.length ? "2" : "1"}. 看 STATE.md 的進行中任務：期限在 2 天內的，以及超過 7 天沒更新的，寫進 outbox.md 提醒負責人。
 沒有要做的就什麼都不改，回「無事」。三行內回報。`;
 }
+
+export function meetingPrompt(p: Project, rawId: string, block: string, transcriptRel: string, notesRel: string, idMap: string): string {
+  return `${head(p)}剛開完一場會，逐字稿已存成 raw ${rawId}：
+
+${block}
+逐字稿全文在 \`${transcriptRel}\`。與會者的 Discord id：${idMap || "（沒有）"}。
+會議錄音本身就是記錄要求，請：
+1. 讀完逐字稿，寫會議紀錄到 \`${notesRel}\`：與會者、摘要（5 行內）、決定、待辦（誰、做什麼、期限）、未決問題。每條附逐字稿時間戳，例如 [00:12:34]。
+2. 依規則更新 STATE.md、decisions.md、people.md。有明確負責人的待辦開成進行中任務，來源寫 raw ${rawId}；負責人或期限不明確的標「未定」，並在 outbox.md 問。
+3. 閒聊和玩笑不要記。逐字稿是自動轉的，可能有錯字，人名或專有名詞看起來怪的照原樣留，不要自己改。
+4. 回覆三到五行：這場會的重點，以及你開了哪些任務。`;
+}

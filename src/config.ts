@@ -65,6 +65,18 @@ export const config = {
   /** 登入過 Google 的 Chromium profile（要登入才能進的會議用）；留空 = 每次全新訪客 */
   meetUserDataDir: expandHome(process.env.MEET_USER_DATA_DIR) || "",
   meetHeaded: process.env.MEET_HEADED === "1",
+  /** 會議轉逐字稿：OpenAI 相容 API（預設 ai.rlong.me 的 LiteLLM），模型要能吃音訊 */
+  transcribeBaseUrl: process.env.TRANSCRIBE_BASE_URL || "https://ai.rlong.me/v1",
+  transcribeApiKey: process.env.TRANSCRIBE_API_KEY || undefined,
+  transcribeApiKeyFile: expandHome(process.env.TRANSCRIBE_API_KEY_FILE) || undefined,
+  /** 留空 = 不轉錄 */
+  transcribeModel: process.env.TRANSCRIBE_MODEL ?? "gemini/gemini-3.6-flash",
+  /** 主模型忙碌（503/429）或失敗時依序改用 */
+  transcribeFallbackModels: list(process.env.TRANSCRIBE_FALLBACK_MODELS ?? "gemini/gemini-3.5-flash,gemini/gemini-2.5-flash"),
+  /** 每段幾分鐘，太長會超過單次請求的大小限制 */
+  transcribeChunkMin: Number(process.env.TRANSCRIBE_CHUNK_MIN ?? 20),
+  /** 錄完自動轉錄 */
+  transcribeAuto: process.env.TRANSCRIBE_AUTO !== "0",
   /** 同一個來源多久內不重抓（分鐘） */
   sourceMinIntervalMin: Number(process.env.SOURCE_MIN_INTERVAL_MIN ?? 10),
 };

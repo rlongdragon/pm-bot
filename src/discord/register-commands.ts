@@ -97,6 +97,12 @@ const commands = [
     )
     .addSubcommand((s) => s.setName("stop").setDescription("停止錄音並存檔"))
     .addSubcommand((s) => s.setName("status").setDescription("目前錄音狀態"))
+    .addSubcommand((s) =>
+      s
+        .setName("transcribe")
+        .setDescription("把錄音轉成逐字稿並整理成會議紀錄（預設最近一場）")
+        .addIntegerOption((o) => o.setName("nth").setDescription("倒數第幾場，1 = 最近一場").setMinValue(1)),
+    )
     .toJSON(),
   new SlashCommandBuilder().setName("review").setDescription("立刻跑一次巡檢（期限、久未更新提醒）").toJSON(),
 ];
