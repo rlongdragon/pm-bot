@@ -14,7 +14,14 @@ ${block}
 其他情況都當成問題：只回答，**不要改任何檔案**。先看 STATE.md，不夠再 grep raw/、notes/、sources/，回答附 raw id。
 如果看起來像是想讓你記、但沒有明說（例如只丟一句「Alice 做登入頁」），回答完問一句「要幫你記錄嗎？」，不要自己記。
 
-附件在 files/。需要提醒別人或向人確認的寫 outbox.md。回覆用 Discord markdown，精簡，不超過 1500 字。`;
+附件在 files/。專案連結的 GitHub（PR、issue、commit）和 Notion 內容在 sources/，問到這些先看 sources/。需要提醒別人或向人確認的寫 outbox.md。
+
+回覆規則：
+- 只處理這一則。不要提起其他舊訊息、之前的問題或別的頻道。
+- 要短。記錄就一句說記了什麼；回答就直接講答案。不要列「原因」「建議」「另外」這類額外段落。
+- 被回覆的訊息讀不到時（上面括號會寫），**什麼都不要記**，一句話說讀不到、請對方把內容直接貼出來。
+- 「訊息連結」是這則 Discord 訊息本身的位置，不是對方要你記的內容。
+- Discord markdown，最多 800 字。`;
 }
 
 export function askPrompt(p: Project, user: string, question: string): string {
@@ -22,7 +29,7 @@ export function askPrompt(p: Project, user: string, question: string): string {
 
 ${question}
 
-先看 STATE.md，不夠再 grep raw/、notes/、sources/。引用時附 raw id。不知道就說不知道，不要猜。精簡、Discord markdown，不超過 1500 字。`;
+先看 STATE.md，不夠再 grep raw/、notes/、sources/（GitHub、Notion 的副本）。引用時附 raw id。不知道就說不知道，不要猜。直接講答案，不要額外段落，Discord markdown，最多 800 字。`;
 }
 
 export function notePrompt(p: Project, rawId: string, block: string): string {

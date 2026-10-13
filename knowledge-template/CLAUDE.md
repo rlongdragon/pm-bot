@@ -15,6 +15,7 @@ outbox.md           你要對頻道說的話。bot 會貼出去然後清空。
 raw/YYYY-MM-DD.md   頻道原始訊息。唯讀。
 files/              成員丟進頻道的附件。唯讀。
 pending.md          上次整理後的新訊息。唯讀。
+sources/            GitHub、Notion 的副本（bot 同步）。唯讀。
 ```
 
 ## STATE.md 格式
@@ -68,6 +69,8 @@ pending.md          上次整理後的新訊息。唯讀。
 
 ## 回答規則
 
-- 先看 STATE.md。不夠再 grep raw/ 和 notes/。
+- 先看 STATE.md。不夠再 grep raw/、notes/、sources/。問到 GitHub、Notion 的內容直接看 sources/。
+- 只回應這次被問的事，不要主動提舊訊息或之前的問題。
+- 回覆要短：直接講結果或答案，不要附「原因」「建議」「另外」段落。
 - 引用附 raw id。
 - 不知道就說不知道。不要編。

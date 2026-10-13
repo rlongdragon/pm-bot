@@ -198,7 +198,7 @@ export function appendRaw(e: RawEntry): { id: string; block: string } {
   let block = `- [${id}] ${hhmm()} #${e.channelName} **${e.author}**（<@${e.authorId}>）：${ind(e.text)}\n`;
   if (e.attachments.length) block += `  附件：${e.attachments.join("、")}\n`;
   for (const c of e.context ?? []) block += `  ${ind(c)}\n`;
-  block += `  <${e.messageUrl}>\n`;
+  block += `  訊息連結：<${e.messageUrl}>\n`;
   fs.appendFileSync(file, block);
   fs.appendFileSync(pendingPath(e.project), block);
   return { id, block };
