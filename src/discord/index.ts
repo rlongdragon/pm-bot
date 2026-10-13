@@ -6,6 +6,7 @@ import {
   GatewayIntentBits,
   MessageFlags,
   Partials,
+  PermissionFlagsBits,
   type Attachment,
   type ChatInputCommandInteraction,
   type Message,
@@ -15,6 +16,7 @@ import { config, isAdmin, isAllowed } from "../config.js";
 import * as store from "../store.js";
 import { commitKnowledge, enqueue, ensureKnowledgeRepo, runAgent, type AgentResult } from "../agent.js";
 import { askPrompt, mentionPrompt, notePrompt, reviewPrompt } from "../prompts.js";
+import { addLink, removeLink, syncLinks } from "../sources/index.js";
 import type { Mode } from "../sandbox.js";
 
 if (!config.discordToken) {
@@ -138,6 +140,9 @@ async function flushOutbox(p: store.Project) {
 /** 跑 agent；成功就把這幾筆移出 pending 並 commit */
 async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label: string, opts: { session?: string; rawIds?: string[] } = {}) {
   const r: AgentResult = await enqueue(async () => {
+    // 先同步外部來源（有變才抓），讓 agent 看到最新的 sources/
+    const synced = await syncLinks(p);
+    if (synced.changed) await commitKnowledge(`sync sources ${p.id}`);
     const res = await runAgent(prompt, { project: p.id, mode, label: `${label}:${p.id}`, resume: opts.session ? store.getSession(p, opts.session) : undefined });
     if (!res.error && mode === "digest") {
       if (opts.rawIds?.length) store.removePending(p.id, opts.rawIds);
@@ -286,6 +291,8 @@ client.on("interactionCreate", async (i) => {
         return await cmdNote(i);
       case "review":
         return await cmdReview(i);
+      case "link":
+        return await cmdLink(i);
     }
   } catch (e) {
     console.error("[discord] command error:", e);
@@ -294,6 +301,22 @@ client.on("interactionCreate", async (i) => {
     else await i.reply({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => {});
   }
 });
+
+/** bot 在這個頻道缺哪些權限。slash 指令不需要檢視權限，所以指令能用不代表 bot 收得到訊息 */
+function missingPerms(i: ChatInputCommandInteraction): string[] {
+  const need: [bigint, string][] = [
+    [PermissionFlagsBits.ViewChannel, "檢視頻道"],
+    [PermissionFlagsBits.SendMessages, "發送訊息"],
+    [PermissionFlagsBits.ReadMessageHistory, "讀取訊息紀錄"],
+  ];
+  if (i.channel && "isThread" in i.channel && i.channel.isThread()) need.push([PermissionFlagsBits.SendMessagesInThreads, "在討論串中傳送訊息"]);
+  return need.filter(([f]) => !i.appPermissions.has(f)).map(([, n]) => n);
+}
+function permWarning(i: ChatInputCommandInteraction): string {
+  const miss = missingPerms(i);
+  if (!miss.length) return "";
+  return `\n\n⚠️ **我在這個頻道缺權限，收不到你的訊息**：${miss.join("、")}。\n頻道設定 > 權限 > 新增「${i.client.user.username}」，把上面這幾項打開。`;
+}
 
 function hereId(i: ChatInputCommandInteraction): string {
   if (!i.channel) throw new Error("只能在頻道內用");
@@ -319,6 +342,7 @@ function infoText(p: store.Project): string {
     `任務 進行中 **${s.openTasks}**　完成 **${s.doneTasks}**`,
     `決策 **${s.decisions}**　筆記 **${s.notes}**　附件 **${s.files}**　成員 **${s.people}**`,
     `最後巡檢 ${fmtDate(p.lastReviewAt)}`,
+    `外部來源 ${p.links?.length ?? 0} 個${p.links?.some((l) => l.error) ? "（⚠️ 有錯誤，看 \`/link list\`）" : ""}　看板 ${p.board ? "Notion" : "未設定"}`,
     "",
     `其他頻道加入：\`/project join id:${p.id}\``,
   ].join("\n");
@@ -338,7 +362,7 @@ async function cmdProject(i: ChatInputCommandInteraction) {
     const id = i.options.getString("id");
     const p = id ? store.getProject(id) : needProject(i);
     if (!p) throw new Error(`找不到專案 \`${id}\``);
-    return i.reply({ content: infoText(p), ...quiet });
+    return i.reply({ content: infoText(p) + (id ? "" : permWarning(i)), ...quiet });
   }
   if (sub === "state") {
     const p = needProject(i);
@@ -356,13 +380,13 @@ async function cmdProject(i: ChatInputCommandInteraction) {
     store.joinChannel(p.id, ch, true);
     await commitKnowledge(`new project ${p.id} ${p.name}`);
     return i.reply({
-      content: `🟢 開了專案 **${p.name}**，ID \`${p.id}\`。<#${ch}> 是主頻道。\n平常對話我不會聽。@我 並說「幫我記錄」「加入追蹤」才會記；直接 @我 問問題我只回答。reply 某句話再 @我，我會連前後文一起看。\n其他頻道加入：\`/project join id:${p.id}\``,
+      content: `🟢 開了專案 **${p.name}**，ID \`${p.id}\`。<#${ch}> 是主頻道。\n平常對話我不會聽。@我 並說「幫我記錄」「加入追蹤」才會記；直接 @我 問問題我只回答。reply 某句話再 @我，我會連前後文一起看。\n其他頻道加入：\`/project join id:${p.id}\`` + permWarning(i),
       ...quiet,
     });
   }
   if (sub === "join") {
     const p = store.joinChannel(i.options.getString("id", true), ch, i.options.getBoolean("primary") ?? false);
-    return i.reply({ content: `🔗 <#${ch}> 加入 **${p.name}**（\`${p.id}\`）${p.primaryChannel === ch ? "，設為主頻道" : ""}`, ...quiet });
+    return i.reply({ content: `🔗 <#${ch}> 加入 **${p.name}**（\`${p.id}\`）${p.primaryChannel === ch ? "，設為主頻道" : ""}` + permWarning(i), ...quiet });
   }
   if (sub === "exit") {
     const p = store.exitChannel(ch);
@@ -405,6 +429,48 @@ async function cmdNote(i: ChatInputCommandInteraction) {
   store.touch(p, "lastRecordAt");
   const r = await runAndCommit(p, "digest", notePrompt(p, rawId, block), "note", { rawIds: [rawId] });
   await i.editReply({ content: `📝 raw ${rawId}　${r.error ? "整理出錯，巡檢時會再試：" + r.error : r.text}`.slice(0, 2000), allowedMentions: { users: [] } });
+}
+
+async function cmdLink(i: ChatInputCommandInteraction) {
+  const p = needProject(i);
+  const sub = i.options.getSubcommand();
+  const quiet = { allowedMentions: { users: [] as string[] } };
+  if (sub === "list") {
+    const ls = p.links ?? [];
+    if (!ls.length) return i.reply({ content: "還沒有外部來源。`/link add url:<GitHub repo 或 Notion 網址>`", flags: MessageFlags.Ephemeral });
+    const lines = ls.map(
+      (l) =>
+        `\`${l.id}\` ${l.type === "github" ? "🐙" : "📝"} [${l.title}](<${l.url}>)　同步 ${fmtDate(l.lastSyncAt)}　更新 ${fmtDate(l.lastChangeAt)}${l.error ? `\n　⚠️ ${l.error}` : ""}`,
+    );
+    return i.reply({ content: lines.join("\n"), ...quiet });
+  }
+  if (!isAdmin(i.user.id)) return i.reply({ content: "沒權限", flags: MessageFlags.Ephemeral });
+  if (sub === "add") {
+    await i.deferReply();
+    const l = await enqueue(async () => {
+      const added = await addLink(p, i.options.getString("url", true), i.user.id);
+      await commitKnowledge(`link ${p.id} ${added.type} ${added.target}`);
+      return added;
+    });
+    return i.editReply({
+      content: `🔗 連上 ${l.type === "github" ? "GitHub" : "Notion"}：[${l.title}](<${l.url}>)（\`${l.id}\`）。之後有人 @我 時會先檢查有沒有更新。`,
+      ...quiet,
+    });
+  }
+  if (sub === "remove") {
+    const l = removeLink(p, i.options.getString("id", true));
+    await commitKnowledge(`unlink ${p.id} ${l.type} ${l.target}`);
+    return i.reply({ content: `移除 ${l.title}（\`${l.id}\`），抓下來的副本也刪了。`, ...quiet });
+  }
+  if (sub === "sync") {
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const r = await enqueue(async () => {
+      const res = await syncLinks(p, true);
+      if (res.changed) await commitKnowledge(`sync sources ${p.id}`);
+      return res;
+    });
+    return i.editReply(`同步完成，${r.changed ? "有更新" : "沒有變動"}。${r.errors.length ? "\n⚠️ " + r.errors.join("\n⚠️ ") : ""}`.slice(0, 2000));
+  }
 }
 
 async function cmdReview(i: ChatInputCommandInteraction) {

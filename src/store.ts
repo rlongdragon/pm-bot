@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
+import type { Link } from "./sources/types.js";
 
 export interface Session {
   id: string;
@@ -27,6 +28,10 @@ export interface Project {
   lastReviewAt?: string;
   /** 每日巡檢跑過的日期，跟手動 /review 分開 */
   lastDailyReview?: string;
+  /** 外部來源（GitHub、Notion），bot 抓、agent 讀 sources/ */
+  links?: Link[];
+  /** Notion 看板：bot 把 STATE.md 的任務推到這個資料庫 */
+  board?: { databaseId: string; url: string; lastPushAt?: string; error?: string };
 }
 
 interface State {

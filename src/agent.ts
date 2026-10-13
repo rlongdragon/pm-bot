@@ -62,7 +62,8 @@ export function buildOptions(o: RunOpts): Options {
       append:
         `\n\n# 工作範圍\n你的工作目錄是專案「${o.project}」的資料夾。只能讀這個資料夾裡的東西` +
         (o.mode === "digest" ? "，只能寫 STATE.md、decisions.md、people.md、outbox.md、log/、notes/。" : "。這是問答回合，不能寫任何檔案。") +
-        `路徑一律用相對路徑。\n\n${rules()}`,
+        `路徑一律用相對路徑。\n` +
+        `sources/ 是外部來源（GitHub、Notion）的唯讀副本，bot 會在你開始前同步好。引用時附原始網址。\n\n${rules()}`,
     },
     hooks: { PreToolUse: [guardHook(cwd, o.mode, o.label)] },
     maxTurns: config.maxTurns,

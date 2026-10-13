@@ -48,6 +48,14 @@ export const config = {
   /** 同頻道多久沒互動就開新 session */
   sessionIdleHours: Number(process.env.SESSION_IDLE_HOURS ?? 3),
   maxTurns: Number(process.env.MAX_TURNS ?? 40),
+  /** 外部來源。GitHub 不設也能看公開 repo（每小時 60 次） */
+  githubToken: process.env.GITHUB_TOKEN || undefined,
+  /** Notion 讀取用的 integration（只開 Read content） */
+  notionToken: process.env.NOTION_TOKEN || undefined,
+  /** Notion 看板用的 integration（要 Update、Insert），只分享給看板頁；留空 = 用 NOTION_TOKEN */
+  notionBoardToken: process.env.NOTION_BOARD_TOKEN || process.env.NOTION_TOKEN || undefined,
+  /** 同一個來源多久內不重抓（分鐘） */
+  sourceMinIntervalMin: Number(process.env.SOURCE_MIN_INTERVAL_MIN ?? 10),
 };
 
 export function isAllowed(userId: string) {

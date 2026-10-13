@@ -11,7 +11,7 @@ ${block}
 - 要追蹤：在 STATE.md 進行中開一條任務。
 - 要更正：改掉對應的那一條，並說改了什麼。
 
-其他情況都當成問題：只回答，**不要改任何檔案**。先看 STATE.md，不夠再 grep raw/ 和 notes/，回答附 raw id。
+其他情況都當成問題：只回答，**不要改任何檔案**。先看 STATE.md，不夠再 grep raw/、notes/、sources/，回答附 raw id。
 如果看起來像是想讓你記、但沒有明說（例如只丟一句「Alice 做登入頁」），回答完問一句「要幫你記錄嗎？」，不要自己記。
 
 附件在 files/。需要提醒別人或向人確認的寫 outbox.md。回覆用 Discord markdown，精簡，不超過 1500 字。`;
@@ -22,7 +22,7 @@ export function askPrompt(p: Project, user: string, question: string): string {
 
 ${question}
 
-先看 STATE.md，不夠再 grep raw/ 和 notes/。引用時附 raw id。不知道就說不知道，不要猜。精簡、Discord markdown，不超過 1500 字。`;
+先看 STATE.md，不夠再 grep raw/、notes/、sources/。引用時附 raw id。不知道就說不知道，不要猜。精簡、Discord markdown，不超過 1500 字。`;
 }
 
 export function notePrompt(p: Project, rawId: string, block: string): string {

@@ -50,6 +50,24 @@ const commands = [
     .addStringOption((o) => o.setName("text").setDescription("內容；長文可以上傳檔案，這裡寫標題").setRequired(true))
     .addAttachmentOption((o) => o.setName("file").setDescription("附件"))
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("link")
+    .setDescription("外部來源：GitHub repo、Notion 頁面或資料庫（唯讀）")
+    .addSubcommand((s) =>
+      s
+        .setName("add")
+        .setDescription("連一個來源到這個專案")
+        .addStringOption((o) => o.setName("url").setDescription("github.com/owner/repo 或 Notion 網址").setRequired(true)),
+    )
+    .addSubcommand((s) => s.setName("list").setDescription("列出這個專案的來源"))
+    .addSubcommand((s) =>
+      s
+        .setName("remove")
+        .setDescription("移除來源")
+        .addStringOption((o) => o.setName("id").setDescription("/link list 看得到的 4 碼 id").setRequired(true)),
+    )
+    .addSubcommand((s) => s.setName("sync").setDescription("立刻重新抓全部來源"))
+    .toJSON(),
   new SlashCommandBuilder().setName("review").setDescription("立刻跑一次巡檢（期限、久未更新提醒）").toJSON(),
 ];
 
