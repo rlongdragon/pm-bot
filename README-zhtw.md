@@ -48,9 +48,9 @@ Discord Developer Portal → Bot：打開 **Message Content Intent**（只能在
 | `/ask <q>` | 問問題，保證唯讀（沒有寫入工具） | ALLOWED_USER_IDS |
 | `/note <text> [file]` | 直接記錄（會議結論、文字稿、研究成果） | ALLOWED_USER_IDS |
 | `/review` | 立刻巡檢 | admin |
-| `/link add <url>` / `list` / `remove <id>` / `sync` | 連 GitHub repo、Notion 頁面或資料庫（唯讀） | admin（list 全部） |
+| `/link add <url>` / `list` / `remove <id>` / `sync` / `github` | 連 GitHub repo、Notion 頁面或資料庫（唯讀）；`github` 給 GitHub App 授權頁面 | admin（list、github 全部） |
 | `/board set <Notion 頁面>` / `sync` / `off` | 在 Notion 建看板，STATE.md 有變就自動更新 | admin |
-| `/meet voice [channel]` / `google <url>` / `stop` / `status` | 錄 Discord 語音或 Google Meet | admin |
+| `/meet voice [channel]` / `google <url>` / `stop` / `status` | 錄 Discord 語音或 Google Meet | ALLOWED_USER_IDS |
 
 每天 `REVIEW_HOUR` 點自動巡檢：期限 2 天內、超過 7 天沒更新的任務在主頻道提醒負責人；之前處理失敗的記錄也會補整理。
 
@@ -93,7 +93,7 @@ knowledge/
 
 **來源（唯讀）**：bot 抓、agent 讀。`/link add` 之後，每次 agent 開跑前 bot 檢查有沒有更新（10 分鐘內不重抓），存成 `sources/<github|notion>/...` 的 markdown。agent 拿不到 token。
 
-- GitHub：README、issues、PRs、最近 30 個 commit、`docs/*.md`。用 ETag，沒變回 304 不算額度。私有 repo 要 `GITHUB_TOKEN`（fine-grained、唯讀）。
+- GitHub：README、issues、PRs、最近 30 個 commit、`docs/*.md`。用 ETag，沒變回 304 不算額度。私有 repo 建議用 GitHub App：在安裝頁面勾 repo 就授權，設定見 [docs/github-app.md](docs/github-app.md)；也可以用 `GITHUB_TOKEN`（fine-grained、唯讀）。
 - Notion：頁面轉 markdown（含子頁面），資料庫轉表格（最多 500 列）。要 `NOTION_TOKEN`，integration 只勾「讀取內容」，在頁面 ••• > Connections 加入。
 
 **看板（寫入）**：bot 把 STATE.md 的任務推到 Notion 資料庫，分進行中、待決、下一步、完成。單向：Notion 上手動改會被蓋掉。

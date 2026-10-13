@@ -50,6 +50,9 @@ export const config = {
   maxTurns: Number(process.env.MAX_TURNS ?? 40),
   /** 外部來源。GitHub 不設也能看公開 repo（每小時 60 次） */
   githubToken: process.env.GITHUB_TOKEN || undefined,
+  /** GitHub App：使用者在安裝頁面勾 repo 就授權，不用 token。私鑰檔是建 App 時下載的 .pem */
+  githubAppId: process.env.GITHUB_APP_ID || undefined,
+  githubAppKeyFile: expandHome(process.env.GITHUB_APP_PRIVATE_KEY_FILE) ? path.resolve(expandHome(process.env.GITHUB_APP_PRIVATE_KEY_FILE)!) : undefined,
   /** Notion 讀取用的 integration（只開 Read content） */
   notionToken: process.env.NOTION_TOKEN || undefined,
   /** Notion 看板用的 integration（要 Update、Insert），只分享給看板頁；留空 = 用 NOTION_TOKEN */

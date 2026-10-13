@@ -2,6 +2,7 @@ import path from "node:path";
 import { config } from "../config.js";
 import type { Link, SyncResult } from "./types.js";
 import { oneLine, writeIfChanged } from "./write.js";
+import { appConfigured, installUrl, tokenForRepo } from "./github-app.js";
 
 const API = "https://api.github.com";
 
@@ -21,7 +22,9 @@ interface GhResp {
 
 async function gh(link: Link, endpoint: string, accept = "application/vnd.github+json"): Promise<GhResp> {
   const headers: Record<string, string> = { Accept: accept, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "pm-bot" };
-  if (config.githubToken) headers.Authorization = `Bearer ${config.githubToken}`;
+  // 優先用 GitHub App（裝在這個 repo 的話），再來是 GITHUB_TOKEN，都沒有就匿名（只能看公開 repo）
+  const token = (await tokenForRepo(link.target)) ?? config.githubToken;
+  if (token) headers.Authorization = `Bearer ${token}`;
   const etag = link.etags?.[endpoint];
   if (etag) headers["If-None-Match"] = etag;
   const r = await fetch(API + endpoint, { headers, signal: AbortSignal.timeout(20_000) });
@@ -33,9 +36,16 @@ async function gh(link: Link, endpoint: string, accept = "application/vnd.github
   return { status: r.status, etag: newEtag, body: accept.includes("raw") ? text : JSON.parse(text) };
 }
 
+async function notFound(what: string): Promise<Error> {
+  if (appConfigured()) {
+    const url = await installUrl().catch(() => null);
+    if (url) return new Error(`看不到 ${what}。私有 repo 要先在 GitHub 授權：<${url}>\n在那頁勾這個 repo、按 Install，再 \`/link add\` 一次`);
+  }
+  return new Error(`找不到 ${what}。私有 repo 要設定 GitHub App（GITHUB_APP_ID）或 GITHUB_TOKEN`);
+}
+
 function explain(status: number, body: unknown, what: string): Error {
   const msg = typeof body === "string" ? body.slice(0, 200) : "";
-  if (status === 404) return new Error(`找不到 ${what}。私有 repo 要在 .env 設 GITHUB_TOKEN，並給它這個 repo 的唯讀權限`);
   if (status === 401) return new Error("GITHUB_TOKEN 無效或過期");
   if (status === 403 && /rate limit/i.test(msg)) return new Error("GitHub API 額度用完了。設 GITHUB_TOKEN 額度會從每小時 60 次變 5000 次");
   return new Error(`GitHub ${status}：${msg}`);
@@ -75,6 +85,7 @@ export async function syncGithub(link: Link, dir: string): Promise<SyncResult> {
   };
 
   const repo = await gh(link, `/repos/${t}`);
+  if (repo.status === 404) throw await notFound(`repo ${t}`);
   if (repo.status !== 200 && repo.status !== 304) throw explain(repo.status, repo.body, `repo ${t}`);
   let title = link.title || t;
   if (repo.status === 200) {

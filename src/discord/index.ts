@@ -17,6 +17,7 @@ import * as store from "../store.js";
 import { commitKnowledge, enqueue, ensureKnowledgeRepo, runAgent, type AgentResult } from "../agent.js";
 import { askPrompt, meetingPrompt, mentionPrompt, notePrompt, reviewPrompt } from "../prompts.js";
 import { addLink, removeLink, syncLinks } from "../sources/index.js";
+import { appConfigured, installUrl } from "../sources/github-app.js";
 import { createBoard, pushBoard } from "../board.js";
 import * as meeting from "../meeting/index.js";
 import { fmtDuration, sanitize, type Manifest } from "../meeting/session.js";
@@ -614,6 +615,10 @@ async function cmdLink(i: ChatInputCommandInteraction) {
     );
     return i.reply({ content: lines.join("\n"), ...quiet });
   }
+  if (sub === "github") {
+    if (!appConfigured()) return i.reply({ content: "還沒設定 GitHub App（.env 的 GITHUB_APP_ID、GITHUB_APP_PRIVATE_KEY_FILE）", flags: MessageFlags.Ephemeral });
+    return i.reply({ content: `在這頁勾要給我看的 repo、按 Install：<${await installUrl()}>\n裝好之後 \`/link add url:<repo 網址>\`。`, flags: MessageFlags.Ephemeral });
+  }
   if (!isAdmin(i.user.id)) return i.reply({ content: "沒權限", flags: MessageFlags.Ephemeral });
   if (sub === "add") {
     await i.deferReply();
@@ -674,7 +679,7 @@ async function cmdBoard(i: ChatInputCommandInteraction) {
 }
 
 async function cmdMeet(i: ChatInputCommandInteraction) {
-  if (!isAdmin(i.user.id)) return i.reply({ content: "沒權限", flags: MessageFlags.Ephemeral });
+  if (!isAllowed(i.user.id)) return i.reply({ content: "你不在 bot 的使用者名單裡，請找管理員。", flags: MessageFlags.Ephemeral });
   if (!i.inCachedGuild()) return i.reply({ content: "只能在伺服器內用", flags: MessageFlags.Ephemeral });
   const p = needProject(i);
   const sub = i.options.getSubcommand();

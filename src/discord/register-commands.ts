@@ -67,6 +67,7 @@ const commands = [
         .addStringOption((o) => o.setName("id").setDescription("/link list 看得到的 4 碼 id").setRequired(true)),
     )
     .addSubcommand((s) => s.setName("sync").setDescription("立刻重新抓全部來源"))
+    .addSubcommand((s) => s.setName("github").setDescription("GitHub 授權頁面：勾要給我看的 repo"))
     .toJSON(),
   new SlashCommandBuilder()
     .setName("board")
