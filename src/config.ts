@@ -73,6 +73,8 @@ export const config = {
   transcribeModel: process.env.TRANSCRIBE_MODEL ?? "gemini/gemini-3.6-flash",
   /** 主模型忙碌（503/429）或失敗時依序改用 */
   transcribeFallbackModels: list(process.env.TRANSCRIBE_FALLBACK_MODELS ?? "gemini/gemini-3.5-flash,gemini/gemini-2.5-flash"),
+  /** 換掉預設的逐字稿 prompt（檔案內容原樣當開頭，程式只在後面補講者和時間資訊） */
+  transcribePromptFile: expandHome(process.env.TRANSCRIBE_PROMPT_FILE) || undefined,
   /** 每段幾分鐘，太長會超過單次請求的大小限制 */
   transcribeChunkMin: Number(process.env.TRANSCRIBE_CHUNK_MIN ?? 20),
   /** 錄完自動轉錄 */

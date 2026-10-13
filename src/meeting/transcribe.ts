@@ -15,9 +15,14 @@ export interface Speech {
   name: string;
 }
 export interface Line {
-  t: number;
   speaker: string;
   text: string;
+}
+/** 一個時間段落：[start - end] 底下好幾句 */
+export interface Block {
+  start: number;
+  end: number;
+  lines: Line[];
 }
 
 function ffmpeg(args: string[], cmd = "ffmpeg"): Promise<string> {
@@ -90,7 +95,7 @@ async function makeChunks(dir: string): Promise<{ file: string; offset: number; 
   const seg = config.transcribeChunkMin * 60;
   await ffmpeg([
     "-hide_banner", "-loglevel", "error", "-y", "-i", path.join(dir, "mixed.ogg"),
-    "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
+    "-ac", "1", "-ar", "24000", "-c:a", "libmp3lame", "-b:a", "48k",
     "-f", "segment", "-segment_time", String(seg), "-reset_timestamps", "1",
     path.join(out, "chunk_%03d.mp3"),
   ]);
@@ -105,42 +110,44 @@ async function makeChunks(dir: string): Promise<{ file: string; offset: number; 
   return chunks;
 }
 
+/** 使用者常用的逐字稿 prompt，原文照用；可用 TRANSCRIBE_PROMPT_FILE 換掉 */
+export const DEFAULT_PROMPT = `幫我把這個錄音轉成逐字稿，不要有任何刪減或是改寫 或是整理，請完整如實1:1輸出逐字稿
+然後請用
+[時間段落]
+A：XXX
+B：XXX
+的方式輸出`;
+
+function basePrompt(): string {
+  if (config.transcribePromptFile) {
+    try {
+      return fs.readFileSync(config.transcribePromptFile, "utf8").trim();
+    } catch {}
+  }
+  return DEFAULT_PROMPT;
+}
+
 export function buildPrompt(o: { m: Manifest; index: number; total: number; offset: number; dur: number; timeline: Speech[]; prevTail: Line[] }): string {
   const names = o.m.participants.map((p) => p.name);
   const discord = o.m.platform === "discord";
-  const parts = [
-    `這是一場會議錄音的第 ${o.index + 1}/${o.total} 段（從會議開始後 ${hms(o.offset)} 起，長 ${hms(o.dur)}）。`,
-    "語言以台灣華語為主，夾雜英文；英文詞保留原文。",
-    "",
-    `與會者${discord ? "" : "（從入會通知抓的，可能不完整）"}：${names.join("、") || "（不知道）"}`,
-  ];
+  const parts = [basePrompt(), "", "補充資訊："];
+  if (o.total > 1) parts.push(`- 這是整場會議的第 ${o.index + 1}/${o.total} 段，時間從這一段開頭算起。`);
+  if (names.length) {
+    parts.push(
+      discord
+        ? `- 講者是：${names.map((n) => `「${n}」`).join("、")}。請直接用名字取代 A、B。`
+        : `- 與會者可能有：${names.map((n) => `「${n}」`).join("、")}（從入會通知抓的，可能不完整）。認得出是誰就用名字，認不出就用 A、B，同一個人前後一致。`,
+    );
+  }
   const tl = o.timeline
     .filter((s) => s.end > o.offset && s.start < o.offset + o.dur)
     .slice(0, 600)
     .map((s) => `${hms(Math.max(0, s.start - o.offset), false)}–${hms(Math.min(o.dur, s.end - o.offset), false)} ${s.name}`);
   if (tl.length) {
-    parts.push(
-      "",
-      "這一段每個人實際在講話的時間（從這一段開頭起算，來自各自的麥克風，很準）：",
-      ...tl,
-      "請依這份時間表決定每句話是誰說的。兩人同時講話時依內容判斷。",
-    );
-  } else {
-    parts.push("", "請從聲音和對話內容判斷講者。能對到與會者名字就用名字；對不到就用「講者A」「講者B」，同一個人前後要一致。");
+    parts.push("- 每個人實際開口的時間（來自各自的麥克風）如下。只用來判斷是誰在講，**不要因此刪減或合併內容**：", ...tl.map((x) => "  " + x));
   }
-  if (o.prevTail.length) {
-    parts.push("", "上一段最後幾句（讓你接續講者，不要重複輸出）：", ...o.prevTail.map((l) => `${l.speaker}：${l.text}`));
-  }
-  parts.push(
-    "",
-    "輸出逐字稿，每行一句，格式嚴格如下：",
-    "[MM:SS] 名字：內容",
-    "- 時間從這一段開頭起算。",
-    "- 用繁體中文。聽不清楚的地方寫［聽不清］，不要猜。",
-    "- 不要摘要、不要改寫、不要補充，只轉寫實際講的話。語助詞和口頭禪可以省略。",
-    "- 長時間沒有人講話就跳過。",
-    "- 只輸出逐字稿，不要任何說明或標題。",
-  );
+  if (o.prevTail.length) parts.push("- 上一段最後幾句如下，讓你接續講者，不要重複輸出：", ...o.prevTail.map((l) => `  ${l.speaker}：${l.text}`));
+  parts.push("- 時間段落寫成 [MM:SS - MM:SS]。", "- 用繁體中文。", "- 只輸出逐字稿，前後不要加任何說明。");
   return parts.join("\n");
 }
 
@@ -155,11 +162,14 @@ export function transcribeEnabled(): boolean {
 }
 
 /** 依序試主模型和備援模型；每個模型重試 2 次。回傳文字和實際用的模型 */
-async function callModel(prompt: string, mp3: string): Promise<{ text: string; model: string }> {
+async function callModel(prompt: string, mp3: string, skip: Set<string>): Promise<{ text: string; model: string }> {
   const key = await apiKey();
   const audio = fs.readFileSync(mp3).toString("base64");
   const errors: string[] = [];
-  for (const model of [config.transcribeModel, ...config.transcribeFallbackModels].filter((x, i, a) => x && a.indexOf(x) === i)) {
+  const models = [config.transcribeModel, ...config.transcribeFallbackModels].filter((x, i, a) => x && a.indexOf(x) === i);
+  // 這次轉錄裡已經忙碌過的模型直接跳過，免得每一段都白等；全部都忙過就全部再試
+  const order = models.filter((m) => !skip.has(m)).length ? models.filter((m) => !skip.has(m)) : models;
+  for (const model of order) {
     const body = JSON.stringify({
       model,
       temperature: 0,
@@ -188,20 +198,42 @@ async function callModel(prompt: string, mp3: string): Promise<{ text: string; m
       }
       await new Promise((res) => setTimeout(res, 4000 * (attempt + 1)));
     }
+    skip.add(model);
     console.warn(`[transcribe] ${model} 失敗，換下一個`);
   }
   throw new Error("所有轉錄模型都失敗：\n" + errors.slice(-4).join("\n"));
 }
 
-export function parseLines(text: string, offset: number): Line[] {
-  const lines: Line[] = [];
+function toSec(t: string): number {
+  const p = t.split(":").map(Number);
+  return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1];
+}
+
+/** 解析「[MM:SS - MM:SS]」段落＋「名字：內容」；也接受「[MM:SS] 名字：內容」單行格式。時間加上這一段的 offset */
+export function parseBlocks(text: string, offset: number): Block[] {
+  const blocks: Block[] = [];
+  let cur: Block | null = null;
+  const T = String.raw`(\d{1,2}:\d{2}(?::\d{2})?)`;
+  const head = new RegExp(String.raw`^\[\s*${T}\s*(?:[-–—~～到]\s*${T}\s*)?\]\s*(.*)$`);
+  const speakerLine = /^([^：:\[\]]{1,40}?)\s*[：:]\s*(.*)$/;
   for (const raw of text.split("\n")) {
-    const m = raw.trim().match(/^\[(\d{1,2}):(\d{2})(?::(\d{2}))?\]\s*([^：:\]]{1,40}?)\s*[：:]\s*(.+)$/);
-    if (!m) continue;
-    const sec = m[3] !== undefined ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : Number(m[1]) * 60 + Number(m[2]);
-    lines.push({ t: offset + sec, speaker: m[4].trim(), text: m[5].trim() });
+    const line = raw.trim().replace(/^\*\*(.+?)\*\*/, "$1");
+    if (!line) continue;
+    const h = line.match(head);
+    if (h) {
+      const start = offset + toSec(h[1]);
+      cur = { start, end: h[2] ? offset + toSec(h[2]) : start, lines: [] };
+      blocks.push(cur);
+      const rest = h[3]?.match(speakerLine);
+      if (rest) cur.lines.push({ speaker: rest[1].trim(), text: rest[2].trim() });
+      continue;
+    }
+    if (!cur) continue; // 開頭的說明文字
+    const sp = line.match(speakerLine);
+    if (sp) cur.lines.push({ speaker: sp[1].trim(), text: sp[2].trim() });
+    else if (cur.lines.length) cur.lines[cur.lines.length - 1].text += line; // 同一個人換行接著講
   }
-  return lines;
+  return blocks.filter((b) => b.lines.length);
 }
 
 export interface TranscriptResult {
@@ -216,20 +248,23 @@ export async function transcribe(dir: string, m: Manifest, label: string, onProg
   if (!fs.existsSync(path.join(dir, "mixed.ogg"))) throw new Error("這場錄音沒有 mixed.ogg");
   const timeline = await speakerTimeline(dir, m);
   const chunks = await makeChunks(dir);
-  const all: Line[] = [];
+  const all: Block[] = [];
   const used = new Set<string>();
+  const skip = new Set<string>();
   for (const [i, c] of chunks.entries()) {
     if (chunks.length > 1) onProgress?.(`轉錄第 ${i + 1}/${chunks.length} 段`);
-    const prompt = buildPrompt({ m, index: i, total: chunks.length, offset: c.offset, dur: c.dur, timeline, prevTail: all.slice(-6) });
-    const { text, model } = await callModel(prompt, c.file);
+    const prevTail = all.flatMap((b) => b.lines).slice(-6);
+    const prompt = buildPrompt({ m, index: i, total: chunks.length, offset: c.offset, dur: c.dur, timeline, prevTail });
+    const { text, model } = await callModel(prompt, c.file, skip);
     used.add(model);
-    const lines = parseLines(text, c.offset);
-    if (!lines.length && text.trim()) all.push({ t: c.offset, speaker: "（格式無法解析）", text: text.trim().slice(0, 4000) });
-    all.push(...lines);
+    const blocks = parseBlocks(text, c.offset);
+    if (!blocks.length && text.trim()) all.push({ start: c.offset, end: c.offset + c.dur, lines: [{ speaker: "（格式無法解析，原文）", text: text.trim() }] });
+    all.push(...blocks);
   }
   fs.rmSync(path.join(dir, "transcribe"), { recursive: true, force: true });
 
-  const speakers = [...new Set(all.map((l) => l.speaker))];
+  const utterances = all.flatMap((b) => b.lines);
+  const speakers = [...new Set(utterances.map((l) => l.speaker))];
   const started = new Date(m.startedAt).toLocaleString("zh-TW", { hour12: false });
   const md = [
     `# 會議逐字稿：${label}`,
@@ -240,10 +275,9 @@ export async function transcribe(dir: string, m: Manifest, label: string, onProg
     `- 講者標註：${timeline.length ? "依每個人自己的麥克風（Discord 每人一軌），準確" : "由模型從聲音判斷，可能有誤"}`,
     `- 轉錄：${[...used].join("、")}，自動產生，可能有錯字`,
     "",
-    ...all.map((l) => `[${hms(l.t)}] ${l.speaker}：${l.text}`),
-    "",
+    ...all.flatMap((b) => [`[${hms(b.start)} - ${hms(b.end)}]`, ...b.lines.map((l) => `${l.speaker}：${l.text}`), ""]),
   ].join("\n");
   const file = path.join(dir, "transcript.md");
   fs.writeFileSync(file, md);
-  return { file, markdown: md, lines: all.length, speakers, models: [...used] };
+  return { file, markdown: md, lines: utterances.length, speakers, models: [...used] };
 }
