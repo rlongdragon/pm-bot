@@ -48,6 +48,8 @@ Discord Developer Portal → Bot：打開 **Message Content Intent**（只能在
 | `/ask <q>` | 問問題，保證唯讀（沒有寫入工具） | ALLOWED_USER_IDS |
 | `/note <text> [file]` | 直接記錄（會議結論、文字稿、研究成果） | ALLOWED_USER_IDS |
 | `/review` | 立刻巡檢 | admin |
+| `/link add <url>` / `list` / `remove <id>` / `sync` | 連 GitHub repo、Notion 頁面或資料庫（唯讀） | admin（list 全部） |
+| `/board set <Notion 頁面>` / `sync` / `off` | 在 Notion 建看板，STATE.md 有變就自動更新 | admin |
 
 每天 `REVIEW_HOUR` 點自動巡檢：期限 2 天內、超過 7 天沒更新的任務在主頻道提醒負責人；之前處理失敗的記錄也會補整理。
 
@@ -86,9 +88,20 @@ knowledge/
 - `settingSources: []`：不讀任何 settings 檔，agent 就算寫了 `.claude/settings.json` 也不生效（而且寫不進去）。
 - 測試：`npx tsx scripts/guard-test.ts`（路徑判斷，34 例，不花錢）、`scripts/escape-test.ts`（真 agent 嘗試越界，花錢）。
 
+## 外部來源與看板
+
+**來源（唯讀）**：bot 抓、agent 讀。`/link add` 之後，每次 agent 開跑前 bot 檢查有沒有更新（10 分鐘內不重抓），存成 `sources/<github|notion>/...` 的 markdown。agent 拿不到 token。
+
+- GitHub：README、issues、PRs、最近 30 個 commit、`docs/*.md`。用 ETag，沒變回 304 不算額度。私有 repo 要 `GITHUB_TOKEN`（fine-grained、唯讀）。
+- Notion：頁面轉 markdown（含子頁面），資料庫轉表格（最多 500 列）。要 `NOTION_TOKEN`，integration 只勾「讀取內容」，在頁面 ••• > Connections 加入。
+
+**看板（寫入）**：bot 把 STATE.md 的任務推到 Notion 資料庫，分進行中、待決、下一步、完成。單向：Notion 上手動改會被蓋掉。
+
+- 建議另開一個 integration 給看板（`NOTION_BOARD_TOKEN`），勾讀取、更新、插入，**只加入看板那一頁**。靠 Notion 權限保證它寫不到別頁。
+- 卡片用任務標題對應，從進行中搬到完成會更新同一張；STATE 裡消失的未完成卡封存，完成的保留。
+
 ## 之後
 
-- Notion 單向推看板（MCP）
-- GitHub webhook → raw
-- Drive / HackMD 讀（MCP）
+- HackMD、Google Drive 來源
+- `/meet` 併入 meeting-recorder
 - 每週 compaction：STATE 裡完成的搬 log

@@ -68,6 +68,18 @@ const commands = [
     )
     .addSubcommand((s) => s.setName("sync").setDescription("立刻重新抓全部來源"))
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("board")
+    .setDescription("Notion 看板：把 STATE.md 的任務推到 Notion")
+    .addSubcommand((s) =>
+      s
+        .setName("set")
+        .setDescription("在這個 Notion 頁面底下建看板")
+        .addStringOption((o) => o.setName("url").setDescription("Notion 頁面網址（要先在那頁加入看板用的 integration）").setRequired(true)),
+    )
+    .addSubcommand((s) => s.setName("sync").setDescription("立刻更新看板"))
+    .addSubcommand((s) => s.setName("off").setDescription("停止更新看板（Notion 上的資料庫保留）"))
+    .toJSON(),
   new SlashCommandBuilder().setName("review").setDescription("立刻跑一次巡檢（期限、久未更新提醒）").toJSON(),
 ];
 

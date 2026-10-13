@@ -17,6 +17,7 @@ import * as store from "../store.js";
 import { commitKnowledge, enqueue, ensureKnowledgeRepo, runAgent, type AgentResult } from "../agent.js";
 import { askPrompt, mentionPrompt, notePrompt, reviewPrompt } from "../prompts.js";
 import { addLink, removeLink, syncLinks } from "../sources/index.js";
+import { createBoard, pushBoard } from "../board.js";
 import type { Mode } from "../sandbox.js";
 
 if (!config.discordToken) {
@@ -146,7 +147,17 @@ async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label:
     const res = await runAgent(prompt, { project: p.id, mode, label: `${label}:${p.id}`, resume: opts.session ? store.getSession(p, opts.session) : undefined });
     if (!res.error && mode === "digest") {
       if (opts.rawIds?.length) store.removePending(p.id, opts.rawIds);
-      await commitKnowledge(`${label} ${p.id}${opts.rawIds?.length ? " " + opts.rawIds.join(",") : ""}`);
+      const changed = await commitKnowledge(`${label} ${p.id}${opts.rawIds?.length ? " " + opts.rawIds.join(",") : ""}`);
+      if (changed && p.board) {
+        try {
+          const b = await pushBoard(p);
+          if (b.created + b.updated + b.archived) console.log(`[board] ${p.id} +${b.created} ~${b.updated} -${b.archived}`);
+        } catch (e) {
+          p.board.error = (e as Error).message;
+          store.save();
+          console.warn(`[board] ${p.id} ${p.board.error}`);
+        }
+      }
     }
     return res;
   });
@@ -293,6 +304,8 @@ client.on("interactionCreate", async (i) => {
         return await cmdReview(i);
       case "link":
         return await cmdLink(i);
+      case "board":
+        return await cmdBoard(i);
     }
   } catch (e) {
     console.error("[discord] command error:", e);
@@ -342,7 +355,7 @@ function infoText(p: store.Project): string {
     `任務 進行中 **${s.openTasks}**　完成 **${s.doneTasks}**`,
     `決策 **${s.decisions}**　筆記 **${s.notes}**　附件 **${s.files}**　成員 **${s.people}**`,
     `最後巡檢 ${fmtDate(p.lastReviewAt)}`,
-    `外部來源 ${p.links?.length ?? 0} 個${p.links?.some((l) => l.error) ? "（⚠️ 有錯誤，看 \`/link list\`）" : ""}　看板 ${p.board ? "Notion" : "未設定"}`,
+    `外部來源 ${p.links?.length ?? 0} 個${p.links?.some((l) => l.error) ? "（⚠️ 有錯誤，看 \`/link list\`）" : ""}　看板 ${p.board ? `[Notion](<${p.board.url}>)　更新 ${fmtDate(p.board.lastPushAt)}${p.board.error ? `　⚠️ ${p.board.error}` : ""}` : "未設定"}`,
     "",
     `其他頻道加入：\`/project join id:${p.id}\``,
   ].join("\n");
@@ -470,6 +483,36 @@ async function cmdLink(i: ChatInputCommandInteraction) {
       return res;
     });
     return i.editReply(`同步完成，${r.changed ? "有更新" : "沒有變動"}。${r.errors.length ? "\n⚠️ " + r.errors.join("\n⚠️ ") : ""}`.slice(0, 2000));
+  }
+}
+
+async function cmdBoard(i: ChatInputCommandInteraction) {
+  const p = needProject(i);
+  const sub = i.options.getSubcommand();
+  if (!isAdmin(i.user.id)) return i.reply({ content: "沒權限", flags: MessageFlags.Ephemeral });
+  if (sub === "set") {
+    await i.deferReply();
+    const r = await enqueue(async () => {
+      p.board = await createBoard(p, i.options.getString("url", true));
+      store.save();
+      return pushBoard(p);
+    });
+    return i.editReply(
+      `📋 在 Notion 建好看板：<${p.board!.url}>，放了 ${r.created} 張卡。\n` +
+        "之後每次筆記有變就自動更新。想看成看板，在 Notion 那個資料庫新增 Board 檢視，依「狀態」分組。\n" +
+        "看板只是 STATE.md 的顯示：在 Notion 上手動改會被下次同步蓋掉，要改請 @我 說「更正」。",
+    );
+  }
+  if (sub === "sync") {
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const r = await enqueue(() => pushBoard(p));
+    return i.editReply(`看板更新：新增 ${r.created}、更新 ${r.updated}、封存 ${r.archived}`);
+  }
+  if (sub === "off") {
+    const had = p.board;
+    p.board = undefined;
+    store.save();
+    return i.reply(had ? `停止更新看板。Notion 上的資料庫還在：<${had.url}>` : "這個專案本來就沒設看板");
   }
 }
 

@@ -46,8 +46,8 @@
 
 | # | Story | 狀態 |
 |---|---|---|
-| 4.1 | `/link` 連 GitHub repo | ⬜ |
-| 4.2 | `/link` 連 Notion 頁面 / database | ⬜ |
+| 4.1 | `/link` 連 GitHub repo | ✅ |
+| 4.2 | `/link` 連 Notion 頁面 / database | ✅ |
 | 4.3 | `/link` 連 HackMD | ⬜ |
 
 權限做法：你說的「虛擬帳號」就是業界標準做法，每個平台都有對應的 bot 身分：
@@ -65,7 +65,7 @@
 
 | # | Story | 狀態 |
 |---|---|---|
-| 5.1 | 有個地方看得到專案現況 | 🟡 | 只有 `/project status` |
+| 5.1 | 有個地方看得到專案現況 | ✅ | `/board set` 推到 Notion 看板 |
 
 做法選項：
 
