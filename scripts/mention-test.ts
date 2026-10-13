@@ -46,5 +46,5 @@ for (const c of cases) {
 }
 console.log(`\n==== STATE.md 進行中 ====\n` + fs.readFileSync(path.join(dir, "STATE.md"), "utf8").split("## 阻塞")[0].split("## 進行中")[1]?.trim());
 console.log(`==== decisions.md ====\n` + fs.readFileSync(path.join(dir, "decisions.md"), "utf8").trim());
-console.log(`==== outbox ====\n` + (store.takeOutbox(p.id) ?? "（空）"));
+console.log(`==== outbox ====\n` + (store.peekOutbox(p.id) ?? "（空）"));
 console.log(`\n${pass}/${cases.length} 符合預期`);

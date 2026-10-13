@@ -140,12 +140,18 @@ export function splitDiscord(text: string, limit = 1900): string[] {
   return out.length ? out : ["（空）"];
 }
 
+/** 把 outbox 貼到主頻道（可以 @ 人）；主頻道發不出去就私訊管理員。都失敗就留著，下次再送 */
 async function flushOutbox(p: store.Project) {
-  const text = store.takeOutbox(p.id);
-  if (!text || !p.primaryChannel) return;
-  const ch = await client.channels.fetch(p.primaryChannel).catch(() => null);
-  if (!ch || !ch.isTextBased() || !("send" in ch)) return;
-  for (const c of splitDiscord(text)) await ch.send({ content: c });
+  const text = store.peekOutbox(p.id);
+  if (!text) return;
+  const chunks = splitDiscord(text);
+  let sent = 0;
+  for (const c of chunks) {
+    if (!(await say(p.primaryChannel, c, config.adminUserIds[0], undefined, { ping: true }))) break;
+    sent++;
+  }
+  if (sent === chunks.length) store.clearOutbox(p.id);
+  else console.warn(`[outbox] ${p.id} 只送出 ${sent}/${chunks.length} 則，留到下次`);
 }
 
 /** 跑 agent；成功就把這幾筆移出 pending 並 commit */
@@ -178,21 +184,30 @@ async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label:
 
 /* ---------- 會議錄音 ---------- */
 
-/** 貼到頻道；bot 在那個頻道沒權限時改私訊下指令的人 */
-async function say(channelId: string, content: string, fallbackUserId?: string, files?: { attachment: string; name: string }[]) {
-  const ch = await client.channels.fetch(channelId).catch(() => null);
+/** 貼到頻道；bot 在那個頻道沒權限時改私訊 fallbackUserId。回傳有沒有送到 */
+async function say(
+  channelId: string | undefined,
+  content: string,
+  fallbackUserId?: string,
+  files?: { attachment: string; name: string }[],
+  opts: { ping?: boolean } = {},
+): Promise<boolean> {
+  const allowedMentions = opts.ping ? undefined : { users: [] as string[] };
+  const ch = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
   if (ch && ch.isTextBased() && "send" in ch) {
-    const ok = await ch.send({ content, files, allowedMentions: { users: [] } }).then(() => true, (e) => (console.warn(`[say] ${channelId}: ${e.message}`), false));
-    if (ok) return;
+    const ok = await ch.send({ content, files, allowedMentions }).then(() => true, (e) => (console.warn(`[say] ${channelId}: ${e.message}`), false));
+    if (ok) return true;
   }
   if (fallbackUserId) {
     const u = await client.users.fetch(fallbackUserId).catch(() => null);
+    const prefix = channelId ? `（我在 <#${channelId}> 沒有發言權限，改私訊你）\n` : "";
     const ok = await u
-      ?.send({ content: `（我在 <#${channelId}> 沒有發言權限，改私訊你）\n${content}`.slice(0, 2000), files })
+      ?.send({ content: (prefix + content).slice(0, 2000), files })
       .then(() => true, (e) => (console.warn(`[say] DM ${fallbackUserId}: ${e.message}`), false));
-    if (ok) return;
+    if (ok) return true;
   }
   console.warn(`[say] 發不出去：${content.slice(0, 80)}`);
+  return false;
 }
 
 meeting.setHandlers({
@@ -244,6 +259,25 @@ async function onMeetingFinished(f: meeting.Finished) {
   if (auto) void transcribeAndRecord(p!, f.dir, m, f.label, f.reportChannelId, f.invokerId);
 }
 
+/** agent 寫的會議紀錄：先找指定路徑，找不到就找這次 agent 跑之後 notes/ 底下最新改過的 .md */
+function findMeetingNotes(projectId: string, notesRel: string, since: number): string | null {
+  const dir = store.projectDir(projectId);
+  const exact = path.join(dir, notesRel);
+  if (fs.existsSync(exact)) return exact;
+  try {
+    const cands = fs
+      .readdirSync(path.join(dir, "notes"), { recursive: true, withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.endsWith(".md"))
+      .map((d) => path.join(d.parentPath, d.name))
+      .map((f) => ({ f, t: fs.statSync(f).mtimeMs }))
+      .filter((x) => x.t >= since)
+      .sort((a, b) => b.t - a.t);
+    return cands[0]?.f ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** 轉逐字稿 → 存成專案附件 → raw 一筆 → Claude 寫會議紀錄、更新 STATE → 貼回 Discord（附逐字稿檔） */
 async function transcribeAndRecord(p: store.Project, dir: string, m: Manifest, label: string, reportChannelId: string, invokerId?: string): Promise<void> {
   try {
@@ -266,13 +300,18 @@ async function transcribeAndRecord(p: store.Project, dir: string, m: Manifest, l
       attachments: [`files/${fname}`],
       messageUrl: "https://discord.com/channels/@me",
     });
+    const agentStart = Date.now();
     const res = await runAndCommit(p, "digest", meetingPrompt(p, rawId, block, `files/${fname}`, notesRel, idMap), "meeting", { rawIds: [rawId] });
+    const notesFile = findMeetingNotes(p.id, notesRel, agentStart);
+    const files = [{ attachment: r.file, name: fname }];
+    if (notesFile) files.unshift({ attachment: notesFile, name: `${day}_${hhmm}_會議紀錄_${sanitize(label.replace(/^🔊/, ""))}.md` });
     await say(
       reportChannelId,
-      `📝 ${label} 逐字稿好了（${r.lines} 句，講者 ${r.speakers.join("、")}）。會議紀錄寫在 \`${notesRel}\`。\n` +
-        (res.error ? `整理時出錯，巡檢會再試：${res.error}` : res.text).slice(0, 1500),
+      `📝 ${label} 會議紀錄${notesFile ? "和逐字稿" : "（逐字稿）"}好了。逐字稿 ${r.lines} 句，講者 ${r.speakers.join("、")}。\n` +
+        (res.error ? `整理時出錯，巡檢會再試：${res.error}` : res.text).slice(0, 1500) +
+        (notesFile ? "" : "\n⚠️ 沒找到會議紀錄檔，只附逐字稿。"),
       invokerId,
-      [{ attachment: r.file, name: fname }],
+      files,
     );
   } catch (e) {
     console.error(`[transcribe] ${p.id} failed:`, e);

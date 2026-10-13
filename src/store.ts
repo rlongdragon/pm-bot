@@ -226,15 +226,18 @@ export function removePending(project: string, ids: string[]) {
   fs.writeFileSync(pendingPath(project), keep.join(""));
 }
 
-export function takeOutbox(project: string): string | null {
-  const f = path.join(projectDir(project), "outbox.md");
+/** 讀 outbox，不清空；確定送出去再 clearOutbox，避免發不出去時訊息不見 */
+export function peekOutbox(project: string): string | null {
   try {
-    const s = fs.readFileSync(f, "utf8").trim();
-    fs.writeFileSync(f, "");
-    return s || null;
+    return fs.readFileSync(path.join(projectDir(project), "outbox.md"), "utf8").trim() || null;
   } catch {
     return null;
   }
+}
+export function clearOutbox(project: string) {
+  try {
+    fs.writeFileSync(path.join(projectDir(project), "outbox.md"), "");
+  } catch {}
 }
 
 export function filesDir(project: string) {
