@@ -13,7 +13,11 @@ npm run register         # 註冊 slash 指令
 npm run dev              # 或 npm run build && npm run pm2:start
 ```
 
-Discord Developer Portal 要開 **Message Content Intent**。Bot 權限：Send Messages、Read Message History、View Channels。
+Discord Developer Portal → Bot：打開 **Message Content Intent**（只能在 Portal 手動開，API 改不了），關掉 **Public Bot**。
+沒開 intent 時 bot 會降級啟動：@bot 和 slash 指令都能用，但 reply 時讀不到被回覆的那句和前後文。開了之後 `npm run pm2:restart`。
+
+邀請連結（權限：看頻道、發訊息、讀歷史、在 thread 發訊息）：
+`https://discord.com/oauth2/authorize?client_id=<CLIENT_ID>&scope=bot+applications.commands&permissions=274877975552`
 
 登入用 Claude 訂閱：`CLAUDE_CONFIG_DIR` 指到有登入的 profile（留空自動讀 `~/.claude-profile`）。之後要換 API key：`PM_USE_API_KEY=1` 並設 `ANTHROPIC_API_KEY`（或 `ANTHROPIC_BASE_URL` 走 LiteLLM）。
 

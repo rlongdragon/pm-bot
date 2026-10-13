@@ -33,13 +33,43 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 store.load();
 await ensureKnowledgeRepo(path.resolve(here, "../../knowledge-template"));
 
+/**
+ * Message Content Intent 要在 Developer Portal 手動打開。沒開時 Discord 仍會給「有 @bot 的訊息」內容，
+ * 所以先試完整權限，被拒（4014 Used disallowed intents）就降級啟動，只是 reply 時讀不到被回覆的那句和前後文。
+ */
+async function probeContentIntent(): Promise<boolean> {
+  const probe = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      probe.once("clientReady", () => resolve());
+      probe.login(config.discordToken).catch(reject);
+    });
+    return true;
+  } catch (e) {
+    if (/disallowed intents/i.test((e as Error).message)) return false;
+    throw e;
+  } finally {
+    await probe.destroy();
+  }
+}
+
+const hasContentIntent = await probeContentIntent();
+if (!hasContentIntent) {
+  console.warn(
+    "[warn] Message Content Intent 沒開，降級啟動：@bot 記錄、問問題、slash 指令都能用，但 reply 時讀不到被回覆的訊息和前後文。\n" +
+      "       到 Developer Portal → Bot → Privileged Gateway Intents 打開後重啟。",
+  );
+}
+
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, ...(hasContentIntent ? [GatewayIntentBits.MessageContent] : [])],
   partials: [Partials.Channel],
 });
 
 client.once("clientReady", () => {
-  console.log(`[discord] logged in as ${client.user?.tag}, knowledge=${config.knowledgeDir}, claude=${config.claudeConfigDir}`);
+  console.log(
+    `[discord] logged in as ${client.user?.tag}, content-intent=${hasContentIntent ? "on" : "OFF"}, allowed=${config.allowedUserIds.join(",") || "ALL"}, knowledge=${config.knowledgeDir}, claude=${config.claudeConfigDir}`,
+  );
   if (config.reviewHour >= 0) {
     setInterval(() => void reviewDue(), 10 * 60_000);
     console.log(`[review] daily at ${config.reviewHour}:00`);
@@ -151,6 +181,9 @@ async function gatherContext(msg: Message<true>): Promise<{ lines: string[]; att
   if (!ref) return { lines: [], atts: [] };
   const atts = [...ref.attachments.values()];
   if (ref.author.id === client.user?.id) return { lines: ["回覆 bot 先前的回答：", quote(ref)], atts };
+  if (!hasContentIntent) {
+    return { lines: [`（bot 沒有 Message Content 權限，讀不到被回覆的訊息內容和前後文。被回覆的是 ${displayName(ref)} 的訊息：${ref.url}）`], atts };
+  }
 
   const ch = msg.channel;
   const [before, after] = await Promise.all([
