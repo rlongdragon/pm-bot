@@ -628,7 +628,7 @@ async function cmdLink(i: ChatInputCommandInteraction) {
       return added;
     });
     return i.editReply({
-      content: `🔗 連上 ${l.type === "github" ? "GitHub" : "Notion"}：[${l.title}](<${l.url}>)（\`${l.id}\`）。之後有人 @我 時會先檢查有沒有更新。`,
+      content: `🔗 連上 ${l.type === "github" ? "GitHub" : "Notion"}：[${l.title}](<${l.url}>)`,
       ...quiet,
     });
   }
