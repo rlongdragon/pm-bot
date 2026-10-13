@@ -22,6 +22,13 @@ if (!config.discordToken) {
   process.exit(1);
 }
 
+if (!process.env.PM_USE_API_KEY && config.allowedUserIds.length === 0) {
+  console.warn(
+    "[warn] 正在用 Claude 訂閱登入，但 ALLOWED_USER_IDS 是空的：任何人都能觸發 agent。\n" +
+      "       官方政策不允許替其他人透過 Free/Pro/Max 訂閱發送請求。請把 ALLOWED_USER_IDS 設成你自己的 Discord user id。",
+  );
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 store.load();
 await ensureKnowledgeRepo(path.resolve(here, "../../knowledge-template"));

@@ -19,6 +19,14 @@ function defaultClaudeConfigDir(): string {
   return path.join(os.homedir(), ".claude");
 }
 
+/** .env 不經過 shell，~ 不會展開，這裡自己處理 */
+function expandHome(p: string | undefined): string | undefined {
+  if (!p) return p;
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
 const allowed = list(process.env.ALLOWED_USER_IDS);
 const admins = list(process.env.ADMIN_USER_IDS);
 
@@ -28,9 +36,9 @@ export const config = {
   discordGuildId: process.env.DISCORD_GUILD_ID || undefined,
   allowedUserIds: allowed,
   adminUserIds: admins.length ? admins : allowed,
-  knowledgeDir: path.resolve(process.env.KNOWLEDGE_DIR || "./knowledge"),
-  stateFile: path.resolve(process.env.STATE_FILE || "./data/state.json"),
-  claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || defaultClaudeConfigDir(),
+  knowledgeDir: path.resolve(expandHome(process.env.KNOWLEDGE_DIR) || "./knowledge"),
+  stateFile: path.resolve(expandHome(process.env.STATE_FILE) || "./data/state.json"),
+  claudeConfigDir: path.resolve(expandHome(process.env.CLAUDE_CONFIG_DIR) || defaultClaudeConfigDir()),
   model: process.env.PM_MODEL || undefined,
   /** 每天幾點巡檢（期限 / 久未更新提醒）；-1 = 不巡檢 */
   reviewHour: Number(process.env.REVIEW_HOUR ?? 9),
