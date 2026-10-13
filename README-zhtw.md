@@ -32,27 +32,38 @@ Discord Developer Portal 要開 **Message Content Intent**。Bot 權限：Send M
 
 ## 知識庫結構
 
+一個專案一個資料夾。agent 跑的時候工作目錄就是那個資料夾，碰不到別的專案。
+
 ```
 knowledge/
-  CLAUDE.md                 PM 規則（從 knowledge-template/ 複製，可自己改）
-  projects/<name>/
-    STATE.md                現況：進行中 / 阻塞 / 下一步
-    decisions.md            決策 append-only
-    people.md               名字 ↔ Discord id ↔ 負責
-    log/YYYY-MM-DD.md       每日摘要
-  raw/<name>/YYYY-MM-DD.md  頻道原文，append-only，bot 不准改
-  raw/<name>/files/         附件
-  pending/<name>.md         待整理緩衝（bot 管）
-  outbox/<name>.md          bot 要貼出去的話（bot 管）
+  CLAUDE.md               PM 規則（從 knowledge-template/ 複製，可自己改；bot 每次讀進系統提示）
+  .git/                   每次整理一個 commit
+  <project>/
+    STATE.md              現況：進行中 / 阻塞 / 下一步        agent 可寫
+    decisions.md          決策 append-only                     agent 可寫
+    people.md             名字 ↔ Discord id ↔ 負責             agent 可寫
+    notes/                研究成果、文字稿整理                  agent 可寫
+    log/YYYY-MM-DD.md     每日摘要                              agent 可寫
+    outbox.md             bot 要貼出去的話                      agent 可寫
+    raw/YYYY-MM-DD.md     頻道原文 append-only                  只有 bot 寫
+    files/                附件                                  只有 bot 寫
+    pending.md            待整理緩衝                            只有 bot 寫
 ```
 
-每次整理一個 commit。`git -C knowledge log -p` 看 bot 改了什麼，改壞了 revert。
+`git -C knowledge log -p` 看 bot 改了什麼，改壞了 revert。
 
-## 安全邊界
+## 權限隔離
 
-- `permissionMode: dontAsk` + 工具白名單：Read/Write/Edit/Glob/Grep/WebFetch + 唯讀 git。不給任意 Bash。
-- `cwd` 鎖在 `knowledge/`，寫不到外面。
-- 問答回合提示「不改檔案」，但 Write 工具仍在；改壞了看 git。
+兩層，任一層擋下就不執行：
+
+1. **權限規則**：`permissionMode: dontAsk`，只允許寫上表標「agent 可寫」的路徑。工作目錄外的讀寫一律拒絕。
+2. **PreToolUse hook**（`src/sandbox.ts`）：每次工具呼叫都解實際路徑（含 symlink），不在白名單就擋，並在 log 印 `[guard] DENY`。
+
+另外：
+
+- 整理回合工具只有 Read/Glob/Grep/Write/Edit/WebFetch。問答回合沒有 Write/Edit。沒有 Bash、沒有 subagent。
+- `settingSources: []`：不讀任何 settings 檔，agent 就算寫了 `.claude/settings.json` 也不生效（而且寫不進去）。
+- 測試：`npx tsx scripts/guard-test.ts`（路徑判斷，34 例，不花錢）、`scripts/escape-test.ts`（真 agent 嘗試越界，花錢）。
 
 ## 之後
 

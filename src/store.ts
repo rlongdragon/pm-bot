@@ -35,6 +35,11 @@ export function save() {
   fs.writeFileSync(config.stateFile, JSON.stringify(state, null, 2));
 }
 
+/** 專案資料夾：knowledge/<name>/。agent 的 cwd，也是它唯一能碰的地方 */
+export function projectDir(name: string) {
+  return path.join(config.knowledgeDir, name);
+}
+
 export function projects(): Project[] {
   return Object.values(state.projects);
 }
@@ -53,17 +58,16 @@ export function createProject(name: string): Project {
   if (!/^[a-z0-9][a-z0-9-_]*$/i.test(name)) throw new Error("名稱只能用英數、- 、_");
   const p: Project = { name, status: "active", createdAt: new Date().toISOString(), channels: [], askSessions: {} };
   state.projects[name] = p;
-  for (const d of ["projects/" + name, "raw/" + name + "/files", "pending", "outbox"]) {
-    fs.mkdirSync(path.join(config.knowledgeDir, d), { recursive: true });
-  }
-  const stateMd = path.join(config.knowledgeDir, "projects", name, "STATE.md");
+  const dir = projectDir(name);
+  for (const d of ["raw", "files", "log", "notes"]) fs.mkdirSync(path.join(dir, d), { recursive: true });
+  const stateMd = path.join(dir, "STATE.md");
   if (!fs.existsSync(stateMd)) {
     fs.writeFileSync(
       stateMd,
       `# ${name}\n\n建立：${p.createdAt.slice(0, 10)}\n\n## 目標\n\n（尚未記錄）\n\n## 進行中\n\n（無）\n\n## 阻塞 / 待決\n\n（無）\n\n## 下一步\n\n（無）\n`,
     );
-    fs.writeFileSync(path.join(config.knowledgeDir, "projects", name, "decisions.md"), `# ${name} 決策紀錄\n\n`);
-    fs.writeFileSync(path.join(config.knowledgeDir, "projects", name, "people.md"), `# ${name} 成員\n\n| 名字 / 別名 | Discord | 負責 |\n|---|---|---|\n`);
+    fs.writeFileSync(path.join(dir, "decisions.md"), `# ${name} 決策紀錄\n\n`);
+    fs.writeFileSync(path.join(dir, "people.md"), `# ${name} 成員\n\n| 名字 / 別名 | Discord | 負責 |\n|---|---|---|\n`);
   }
   save();
   return p;
@@ -126,7 +130,7 @@ export interface RawEntry {
 /** 寫一筆到 raw 日誌 + pending 緩衝；回傳 raw 引用 id */
 export function appendRaw(e: RawEntry): string {
   const date = today();
-  const rawDir = path.join(config.knowledgeDir, "raw", e.project);
+  const rawDir = path.join(projectDir(e.project), "raw");
   fs.mkdirSync(rawDir, { recursive: true });
   const file = path.join(rawDir, `${date}.md`);
   if (!fs.existsSync(file)) fs.writeFileSync(file, `# ${e.project} raw ${date}\n\n`);
@@ -136,12 +140,12 @@ export function appendRaw(e: RawEntry): string {
   const att = e.attachments.length ? `\n  附件：${e.attachments.join("、")}` : "";
   const line = `- [${id}] ${hhmm()} #${e.channelName} **${e.author}**（<@${e.authorId}>）：${e.text.replace(/\n/g, "\n  ")}${att}\n  <${e.messageUrl}>\n`;
   fs.appendFileSync(file, line);
-  fs.appendFileSync(path.join(config.knowledgeDir, "pending", `${e.project}.md`), line);
+  fs.appendFileSync(pendingPath(e.project), line);
   return id;
 }
 
 export function pendingPath(project: string) {
-  return path.join(config.knowledgeDir, "pending", `${project}.md`);
+  return path.join(projectDir(project), "pending.md");
 }
 export function hasPending(project: string) {
   try {
@@ -157,7 +161,7 @@ export function clearPending(project: string) {
 }
 
 export function takeOutbox(project: string): string | null {
-  const f = path.join(config.knowledgeDir, "outbox", `${project}.md`);
+  const f = path.join(projectDir(project), "outbox.md");
   try {
     const s = fs.readFileSync(f, "utf8").trim();
     fs.writeFileSync(f, "");
@@ -168,7 +172,7 @@ export function takeOutbox(project: string): string | null {
 }
 
 export function filesDir(project: string) {
-  const d = path.join(config.knowledgeDir, "raw", project, "files");
+  const d = path.join(projectDir(project), "files");
   fs.mkdirSync(d, { recursive: true });
   return d;
 }

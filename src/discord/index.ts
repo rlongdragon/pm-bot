@@ -110,7 +110,7 @@ async function handleAsk(p: store.Project, msg: Message, question: string) {
   const typing = "sendTyping" in ch ? setInterval(() => void ch.sendTyping().catch(() => {}), 8000) : undefined;
   if ("sendTyping" in ch) void ch.sendTyping().catch(() => {});
   try {
-    const r = await enqueue(() => runAgent(askPrompt(p, msg.author.id, question), { resume: p.askSessions[chId], label: `ask:${p.name}` }));
+    const r = await enqueue(() => runAgent(askPrompt(p, msg.author.id, question), { project: p.name, mode: "ask", resume: p.askSessions[chId], label: `ask:${p.name}` }));
     if (r.sessionId) store.setAskSession(p.name, chId, r.sessionId);
     await replyChunked(msg, r.error ? `出錯：${r.error}` : r.text || "（沒有回覆）");
   } catch (e) {
@@ -148,7 +148,7 @@ export function splitDiscord(text: string, limit = 1900): string[] {
 async function digestProject(p: store.Project, reason: string): Promise<string> {
   if (!store.hasPending(p.name)) return "無新訊息";
   const r = await enqueue(async () => {
-    const res = await runAgent(digestPrompt(p), { label: `digest:${p.name}:${reason}` });
+    const res = await runAgent(digestPrompt(p), { project: p.name, mode: "digest", label: `digest:${p.name}:${reason}` });
     if (!res.error) {
       store.clearPending(p.name);
       await commitKnowledge(`digest ${p.name} (${reason})`);
@@ -221,7 +221,7 @@ async function cmdProject(i: ChatInputCommandInteraction) {
   }
   if (sub === "status") {
     const p = needProject(i);
-    const md = fs.readFileSync(path.join(config.knowledgeDir, "projects", p.name, "STATE.md"), "utf8");
+    const md = fs.readFileSync(path.join(store.projectDir(p.name), "STATE.md"), "utf8");
     await i.reply({ content: splitDiscord(md)[0], allowedMentions: { users: [] } });
     return;
   }
@@ -261,7 +261,7 @@ async function cmdAsk(i: ChatInputCommandInteraction) {
   const q = i.options.getString("q", true);
   await i.deferReply();
   const chId = resolveChannelId(i.channel!);
-  const r = await enqueue(() => runAgent(askPrompt(p, i.user.id, q), { resume: p.askSessions[chId], label: `ask:${p.name}` }));
+  const r = await enqueue(() => runAgent(askPrompt(p, i.user.id, q), { project: p.name, mode: "ask", resume: p.askSessions[chId], label: `ask:${p.name}` }));
   if (r.sessionId) store.setAskSession(p.name, chId, r.sessionId);
   const chunks = splitDiscord(r.error ? `出錯：${r.error}` : r.text || "（沒有回覆）");
   await i.editReply({ content: `> ${q}\n\n${chunks[0]}`.slice(0, 2000), allowedMentions: { users: [] } });
@@ -294,7 +294,7 @@ async function cmdNote(i: ChatInputCommandInteraction) {
     messageUrl: `https://discord.com/channels/${i.guildId}/${i.channelId}`,
   });
   const r = await enqueue(async () => {
-    const res = await runAgent(noteAckPrompt(p, rawId), { label: `note:${p.name}` });
+    const res = await runAgent(noteAckPrompt(p, rawId), { project: p.name, mode: "digest", label: `note:${p.name}` });
     if (!res.error) await commitKnowledge(`note ${p.name} ${rawId}`);
     return res;
   });

@@ -15,7 +15,7 @@ const p = store.getProject(name)!;
 store.appendRaw({ project: name, channelName: "general", author: "Alice", authorId: "111", text: "登入頁 UI 我來做，下週三前交", attachments: [], messageUrl: "https://discord.com/x" });
 store.appendRaw({ project: name, channelName: "general", author: "Bob", authorId: "222", text: "那後端 API 就決定用 FastAPI 了，不用 Express", attachments: [], messageUrl: "https://discord.com/y" });
 console.log("config dir:", config.claudeConfigDir);
-const r = await runAgent(digestPrompt(p), { label: "smoke" });
+const r = await runAgent(digestPrompt(p), { project: name, mode: "digest", label: "smoke" });
 console.log("---- result ----\n" + (r.error ?? r.text));
 if (!r.error) { store.clearPending(name); console.log("committed:", await commitKnowledge("smoke digest")); }
 console.log("outbox:", store.takeOutbox(name));
