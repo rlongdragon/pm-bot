@@ -1,25 +1,40 @@
-import type { Project } from "./store.js";
+import { today, type Project } from "./store.js";
 
-export function digestPrompt(p: Project): string {
-  return `專案「${p.name}」整理回合。
+const head = (p: Project) => `專案「${p.name}」（${p.id}）。今天是 ${today()}。`;
 
-1. 讀 \`pending.md\`，這是上次整理之後頻道新進的訊息。
-2. 讀 \`STATE.md\`、\`decisions.md\`、\`people.md\` 了解現況。
-3. 依規則更新這三個檔案。只改真的有變的部分。
-4. 有需要向人確認或提醒的事，寫進 \`outbox.md\`。沒有就不要寫。
-5. 若 pending 裡沒有任何值得記錄的內容，什麼都不改，回「無更新」。
+export function mentionPrompt(p: Project, rawId: string, block: string): string {
+  return `${head(p)}有人在頻道 @ 了你。這則已經存成 raw ${rawId}：
 
-最後用三行以內回報你改了什麼。不要貼整個檔案。`;
+${block}
+**只有對方明確要你記錄時才改筆記**，例如「幫我記錄」「加入記憶」「加入追蹤」「記一下」「更正」這類說法：
+- 要記錄：依規則更新筆記，回一兩句說你記了什麼。
+- 要追蹤：在 STATE.md 進行中開一條任務。
+- 要更正：改掉對應的那一條，並說改了什麼。
+
+其他情況都當成問題：只回答，**不要改任何檔案**。先看 STATE.md，不夠再 grep raw/ 和 notes/，回答附 raw id。
+如果看起來像是想讓你記、但沒有明說（例如只丟一句「Alice 做登入頁」），回答完問一句「要幫你記錄嗎？」，不要自己記。
+
+附件在 files/。需要提醒別人或向人確認的寫 outbox.md。回覆用 Discord markdown，精簡，不超過 1500 字。`;
 }
 
 export function askPrompt(p: Project, user: string, question: string): string {
-  return `專案「${p.name}」。<@${user}> 問：
+  return `${head(p)}<@${user}> 問：
 
 ${question}
 
-先看 \`STATE.md\`，不夠再 grep \`raw/\` 和 \`notes/\`。引用時附 raw id（例如 2026-10-13#4）。不知道就說不知道，不要猜。精簡、Discord 可讀的 markdown，不超過 1500 字。`;
+先看 STATE.md，不夠再 grep raw/ 和 notes/。引用時附 raw id。不知道就說不知道，不要猜。精簡、Discord markdown，不超過 1500 字。`;
 }
 
-export function noteAckPrompt(p: Project, rawId: string): string {
-  return `專案「${p.name}」。raw ${rawId} 是一則被標記為「重要」的訊息（會議結論、文字稿、研究成果等），附件在 \`files/\`。立刻讀它並依規則更新筆記；研究成果、文字稿的重點整理寫進 \`notes/\`。需要確認的寫 outbox。三行內回報改了什麼。`;
+export function notePrompt(p: Project, rawId: string, block: string): string {
+  return `${head(p)}這則被明確標為「要記錄」（會議結論、文字稿、研究成果等），已存成 raw ${rawId}：
+
+${block}
+依規則更新筆記；研究成果、文字稿的重點整理寫進 notes/<主題>.md。附件在 files/。需要確認的寫 outbox.md。三行內回報改了什麼。`;
+}
+
+export function reviewPrompt(p: Project, pending: string[]): string {
+  return `${head(p)}每日巡檢。
+${pending.length ? `\n1. pending.md 裡有 ${pending.length} 筆之前沒處理成功的記錄（${pending.join("、")}），依規則整理進筆記。` : ""}
+${pending.length ? "2" : "1"}. 看 STATE.md 的進行中任務：期限在 2 天內的，以及超過 7 天沒更新的，寫進 outbox.md 提醒負責人。
+沒有要做的就什麼都不改，回「無事」。三行內回報。`;
 }

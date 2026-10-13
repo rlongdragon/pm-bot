@@ -32,7 +32,13 @@ export const config = {
   stateFile: path.resolve(process.env.STATE_FILE || "./data/state.json"),
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || defaultClaudeConfigDir(),
   model: process.env.PM_MODEL || undefined,
-  digestIntervalMin: Number(process.env.DIGEST_INTERVAL_MIN ?? 15),
+  /** 每天幾點巡檢（期限 / 久未更新提醒）；-1 = 不巡檢 */
+  reviewHour: Number(process.env.REVIEW_HOUR ?? 9),
+  /** reply 某句話時，抓那句之前 / 之後幾則當上下文 */
+  contextBefore: Number(process.env.CONTEXT_BEFORE ?? 10),
+  contextAfter: Number(process.env.CONTEXT_AFTER ?? 5),
+  /** 同頻道多久沒互動就開新 session */
+  sessionIdleHours: Number(process.env.SESSION_IDLE_HOURS ?? 3),
   maxTurns: Number(process.env.MAX_TURNS ?? 40),
 };
 

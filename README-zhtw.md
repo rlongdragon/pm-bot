@@ -17,18 +17,35 @@ Discord Developer Portal 要開 **Message Content Intent**。Bot 權限：Send M
 
 登入用 Claude 訂閱：`CLAUDE_CONFIG_DIR` 指到有登入的 profile（留空自動讀 `~/.claude-profile`）。之後要換 API key：`PM_USE_API_KEY=1` 並設 `ANTHROPIC_API_KEY`（或 `ANTHROPIC_BASE_URL` 走 LiteLLM）。
 
+## 怎麼用
+
+**平常對話 bot 不聽、不存。** 只有被叫到才動：
+
+| 怎麼叫 | 做什麼 |
+|---|---|
+| @bot 加問題 | 回答。不改筆記 |
+| @bot「幫我記錄」「加入記憶」「加入追蹤」「更正」… | 記進筆記，回一句記了什麼 |
+| reply 某句話再 @bot | 連那句和前後文一起看（前 `CONTEXT_BEFORE` 則、後 `CONTEXT_AFTER` 則） |
+| reply bot 的回答再 @bot | 接著上一輪對話 |
+
+記錄或回答由 agent 判斷，規則是使用者要明確說要記才記。沒明說但像要記的，它會反問。
+被叫到的那則（含上下文）一律存成 raw，筆記裡的每一條都引用 raw id。
+
 ## 指令
 
 | 指令 | 做什麼 | 誰能用 |
 |---|---|---|
-| `/project new <name>` | 開專案，目前頻道設主頻道 | admin |
-| `/project bind <name> [channel] [primary]` | 多綁一個頻道（thread 自動跟父頻道） | admin |
-| `/project unbind` / `close` / `list` / `status` | 字面意思 | admin（list/status 全部） |
-| `/ask <q>` 或 `@bot <q>` | 問專案現況，引用 raw id | ALLOWED_USER_IDS |
-| `/note <text> [file]` | 丟重要內容（會議結論、文字稿、研究成果），**立刻**整理 | ALLOWED_USER_IDS |
-| `/digest` | 立刻整理這專案的新訊息 | admin |
+| `/project new <name>` | 開專案，給一組 6 碼 ID，目前頻道設主頻道 | admin |
+| `/project info [id]` | ID、頻道、統計（記錄數、任務、決策、筆記、附件、成員、最後巡檢） | 所有人 |
+| `/project join <id> [primary]` | 目前頻道加入既有專案（thread 自動跟父頻道） | admin |
+| `/project exit` | 目前頻道離開專案，資料保留 | admin |
+| `/project list` / `state` | 列出所有專案 / 貼 STATE.md | 所有人 |
+| `/project close <id>` | 結束專案，打一次 ID 當確認 | admin |
+| `/ask <q>` | 問問題，保證唯讀（沒有寫入工具） | ALLOWED_USER_IDS |
+| `/note <text> [file]` | 直接記錄（會議結論、文字稿、研究成果） | ALLOWED_USER_IDS |
+| `/review` | 立刻巡檢 | admin |
 
-綁定頻道裡的每則訊息、附件都會自動進 `raw/`。每 `DIGEST_INTERVAL_MIN` 分鐘跑一次整理（有新訊息才跑）。bot 要說話（確認、提醒）寫到 `outbox/`，整理完貼到主頻道。
+每天 `REVIEW_HOUR` 點自動巡檢：期限 2 天內、超過 7 天沒更新的任務在主頻道提醒負責人；之前處理失敗的記錄也會補整理。
 
 ## 知識庫結構
 
@@ -38,7 +55,7 @@ Discord Developer Portal 要開 **Message Content Intent**。Bot 權限：Send M
 knowledge/
   CLAUDE.md               PM 規則（從 knowledge-template/ 複製，可自己改；bot 每次讀進系統提示）
   .git/                   每次整理一個 commit
-  <project>/
+  <id>/                   專案 ID（6 碼）
     STATE.md              現況：進行中 / 阻塞 / 下一步        agent 可寫
     decisions.md          決策 append-only                     agent 可寫
     people.md             名字 ↔ Discord id ↔ 負責             agent 可寫
