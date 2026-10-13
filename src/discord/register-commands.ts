@@ -1,4 +1,4 @@
-import { REST, Routes, SlashCommandBuilder } from "discord.js";
+import { ChannelType, REST, Routes, SlashCommandBuilder } from "discord.js";
 import { config } from "../config.js";
 
 if (!config.discordToken || !config.discordClientId) {
@@ -79,6 +79,24 @@ const commands = [
     )
     .addSubcommand((s) => s.setName("sync").setDescription("立刻更新看板"))
     .addSubcommand((s) => s.setName("off").setDescription("停止更新看板（Notion 上的資料庫保留）"))
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("meet")
+    .setDescription("會議錄音：Discord 語音或 Google Meet")
+    .addSubcommand((s) =>
+      s
+        .setName("voice")
+        .setDescription("錄 Discord 語音頻道（每人一軌）")
+        .addChannelOption((o) => o.setName("channel").setDescription("留空 = 你現在所在的語音頻道").addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice)),
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("google")
+        .setDescription("以訪客身分加入 Google Meet 錄音")
+        .addStringOption((o) => o.setName("url").setDescription("https://meet.google.com/xxx-yyyy-zzz").setRequired(true)),
+    )
+    .addSubcommand((s) => s.setName("stop").setDescription("停止錄音並存檔"))
+    .addSubcommand((s) => s.setName("status").setDescription("目前錄音狀態"))
     .toJSON(),
   new SlashCommandBuilder().setName("review").setDescription("立刻跑一次巡檢（期限、久未更新提醒）").toJSON(),
 ];

@@ -54,6 +54,17 @@ export const config = {
   notionToken: process.env.NOTION_TOKEN || undefined,
   /** Notion 看板用的 integration（要 Update、Insert），只分享給看板頁；留空 = 用 NOTION_TOKEN */
   notionBoardToken: process.env.NOTION_BOARD_TOKEN || process.env.NOTION_TOKEN || undefined,
+  /** 會議錄音（/meet）。音檔不進筆記 git，放這裡：<dir>/<專案ID>/<時間>_<平台>_<名稱>/ */
+  recordingsDir: path.resolve(expandHome(process.env.RECORDINGS_DIR) || "./data/recordings"),
+  opusBitrate: process.env.OPUS_BITRATE || "64k",
+  meetBotName: process.env.MEET_BOT_NAME || "會議記錄員",
+  /** Meet 房裡只剩 bot 超過幾秒就離開（0 = 不自動離開） */
+  meetAloneTimeoutSec: Number(process.env.MEET_ALONE_TIMEOUT_SEC ?? 120),
+  /** 等主持人放行最多幾秒 */
+  meetAdmitTimeoutSec: Number(process.env.MEET_ADMIT_TIMEOUT_SEC ?? 600),
+  /** 登入過 Google 的 Chromium profile（要登入才能進的會議用）；留空 = 每次全新訪客 */
+  meetUserDataDir: expandHome(process.env.MEET_USER_DATA_DIR) || "",
+  meetHeaded: process.env.MEET_HEADED === "1",
   /** 同一個來源多久內不重抓（分鐘） */
   sourceMinIntervalMin: Number(process.env.SOURCE_MIN_INTERVAL_MIN ?? 10),
 };

@@ -18,6 +18,8 @@ import { commitKnowledge, enqueue, ensureKnowledgeRepo, runAgent, type AgentResu
 import { askPrompt, mentionPrompt, notePrompt, reviewPrompt } from "../prompts.js";
 import { addLink, removeLink, syncLinks } from "../sources/index.js";
 import { createBoard, pushBoard } from "../board.js";
+import * as meeting from "../meeting/index.js";
+import { fmtDuration } from "../meeting/session.js";
 import type { Mode } from "../sandbox.js";
 
 if (!config.discordToken) {
@@ -41,7 +43,9 @@ await ensureKnowledgeRepo(path.resolve(here, "../../knowledge-template"));
  * 所以先試完整權限，被拒（4014 Used disallowed intents）就降級啟動，只是 reply 時讀不到被回覆的那句和前後文。
  */
 async function probeContentIntent(): Promise<boolean> {
-  const probe = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+  const probe = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.MessageContent],
+  });
   try {
     await new Promise<void>((resolve, reject) => {
       probe.once("clientReady", () => resolve());
@@ -65,7 +69,12 @@ if (!hasContentIntent) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, ...(hasContentIntent ? [GatewayIntentBits.MessageContent] : [])],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildVoiceStates, // /meet voice：知道誰在語音頻道、沒人時自動停
+    ...(hasContentIntent ? [GatewayIntentBits.MessageContent] : []),
+  ],
   partials: [Partials.Channel],
 });
 
@@ -165,6 +174,63 @@ async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label:
   await flushOutbox(p);
   return r;
 }
+
+/* ---------- 會議錄音 ---------- */
+
+async function say(channelId: string, content: string) {
+  const ch = await client.channels.fetch(channelId).catch(() => null);
+  if (!ch || !ch.isTextBased() || !("send" in ch)) {
+    console.warn(`[meet] 無法在 ${channelId} 發訊息：${content.slice(0, 80)}`);
+    return;
+  }
+  await ch.send({ content, allowedMentions: { users: [] } }).catch((e) => console.warn(`[meet] send failed: ${e.message}`));
+}
+
+meeting.setHandlers({
+  status: (a, msg) => {
+    if (/已要求加入|開始錄音/.test(msg)) void say(a.reportChannelId, `🎙 ${a.label}：${msg}`);
+  },
+  finished: (f) => void onMeetingFinished(f),
+});
+
+async function onMeetingFinished(f: meeting.Finished) {
+  const m = f.manifest;
+  const rel = f.dir ? path.relative(process.cwd(), f.dir) : "";
+  if (!m?.files.mixed) {
+    if (f.dir) fs.rmSync(f.dir, { recursive: true, force: true }); // 沒有聲音就不留空資料夾
+    await say(
+      f.reportChannelId,
+      f.error ? `⚠️ ${f.label} 沒有錄到：${f.error}` : `⏹ ${f.label} 停止了，還沒錄到聲音（可能還在等主持人放行，或沒有人講話）。`,
+    );
+    return;
+  }
+  const dur = fmtDuration(m.durationSec ?? 0);
+  const names = m.participants.map((x) => x.name).join("、") || "（沒有人講話）";
+  const p = store.getProject(f.projectId);
+  let rawNote = "";
+  if (p) {
+    const started = new Date(m.startedAt).toLocaleString("zh-TW", { hour12: false });
+    const { id } = store.appendRaw({
+      project: p.id,
+      channelName: "會議",
+      author: client.user?.username ?? "bot",
+      authorId: client.user?.id ?? "0",
+      text: `【會議錄音】${f.label}，${started} 開始，長度 ${dur}，參與者：${names}。音檔在伺服器 ${rel}/mixed.ogg（不在筆記資料夾裡），還沒有文字稿。`,
+      attachments: [],
+      messageUrl: `https://discord.com/channels/@me`,
+    });
+    store.removePending(p.id, [id]);
+    await enqueue(() => commitKnowledge(`meeting ${p.id} ${id}`));
+    rawNote = `已記在專案（raw ${id}）。`;
+  }
+  await say(
+    f.reportChannelId,
+    `⏹ ${f.label} 錄完：長度 ${dur}，參與者 ${names}。${rawNote}\n` +
+      `音檔在伺服器 \`${rel}/mixed.ogg\`${m.platform === "discord" ? "，另有每人一軌" : ""}。文字稿還沒自動產生，有逐字稿可以用 \`/note\` 上傳。`,
+  );
+}
+
+client.on("voiceStateUpdate", (oldState) => meeting.onVoiceStateUpdate(oldState));
 
 /* ---------- 被叫才處理 ---------- */
 
@@ -306,6 +372,8 @@ client.on("interactionCreate", async (i) => {
         return await cmdLink(i);
       case "board":
         return await cmdBoard(i);
+      case "meet":
+        return await cmdMeet(i);
     }
   } catch (e) {
     console.error("[discord] command error:", e);
@@ -516,6 +584,40 @@ async function cmdBoard(i: ChatInputCommandInteraction) {
   }
 }
 
+async function cmdMeet(i: ChatInputCommandInteraction) {
+  if (!isAdmin(i.user.id)) return i.reply({ content: "沒權限", flags: MessageFlags.Ephemeral });
+  if (!i.inCachedGuild()) return i.reply({ content: "只能在伺服器內用", flags: MessageFlags.Ephemeral });
+  const p = needProject(i);
+  const sub = i.options.getSubcommand();
+  if (sub === "status") {
+    const a = meeting.getActive(p.id);
+    return i.reply({ content: a ? `🔴 ${meeting.describe(a)}` : "沒有在錄", flags: MessageFlags.Ephemeral });
+  }
+  if (sub === "stop") {
+    const a = meeting.getActive(p.id);
+    if (!a) return i.reply({ content: "沒有在錄", flags: MessageFlags.Ephemeral });
+    await i.deferReply();
+    await a.stop();
+    return i.editReply(`⏹ 停止 ${a.label}。存檔結果會貼在 <#${a.reportChannelId}>。`);
+  }
+  if (sub === "voice") {
+    const opt = i.options.getChannel("channel");
+    const ch = opt ? i.guild.channels.cache.get(opt.id) : i.member.voice.channel;
+    if (!ch || !ch.isVoiceBased()) return i.reply({ content: "你要先進語音頻道，或在指令裡指定一個語音頻道", flags: MessageFlags.Ephemeral });
+    await i.deferReply();
+    const a = await meeting.startVoice(p.id, ch, i.channelId);
+    return i.editReply(`🔴 開始錄 ${a.label}，每人一軌。\`/meet stop\` 或所有人離開後自動停止，錄完會貼在這裡。` + permWarning(i));
+  }
+  if (sub === "google") {
+    const a = meeting.startMeet(p.id, i.options.getString("url", true).trim(), i.channelId);
+    return i.reply(
+      `🟡 正在加入 ${a.label}，名字是「${config.meetBotName}」。主持人放行後開始錄，\`/meet stop\` 停止。\n` +
+        `會議要求 Google 帳號登入的話訪客進不去，我會在這裡回報。` +
+        permWarning(i),
+    );
+  }
+}
+
 async function cmdReview(i: ChatInputCommandInteraction) {
   if (!isAdmin(i.user.id)) return i.reply({ content: "沒權限", flags: MessageFlags.Ephemeral });
   const p = needProject(i);
@@ -523,11 +625,16 @@ async function cmdReview(i: ChatInputCommandInteraction) {
   await i.editReply(`巡檢 **${p.name}**：${await reviewProject(p, "manual")}`.slice(0, 2000));
 }
 
+let shuttingDown = false;
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, () => {
-    console.log(`[discord] ${sig}`);
+  process.on(sig, async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const n = meeting.allActive().length;
+    console.log(`[discord] ${sig}${n ? `，先把 ${n} 場錄音存好` : ""}`);
+    await meeting.stopAll();
     store.save();
-    client.destroy();
+    await client.destroy();
     process.exit(0);
   });
 }

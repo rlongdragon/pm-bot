@@ -50,6 +50,7 @@ Discord Developer Portal → Bot：打開 **Message Content Intent**（只能在
 | `/review` | 立刻巡檢 | admin |
 | `/link add <url>` / `list` / `remove <id>` / `sync` | 連 GitHub repo、Notion 頁面或資料庫（唯讀） | admin（list 全部） |
 | `/board set <Notion 頁面>` / `sync` / `off` | 在 Notion 建看板，STATE.md 有變就自動更新 | admin |
+| `/meet voice [channel]` / `google <url>` / `stop` / `status` | 錄 Discord 語音或 Google Meet | admin |
 
 每天 `REVIEW_HOUR` 點自動巡檢：期限 2 天內、超過 7 天沒更新的任務在主頻道提醒負責人；之前處理失敗的記錄也會補整理。
 
@@ -100,8 +101,17 @@ knowledge/
 - 建議另開一個 integration 給看板（`NOTION_BOARD_TOKEN`），勾讀取、更新、插入，**只加入看板那一頁**。靠 Notion 權限保證它寫不到別頁。
 - 卡片用任務標題對應，從進行中搬到完成會更新同一張；STATE 裡消失的未完成卡封存，完成的保留。
 
+## 會議錄音
+
+從 meeting-recorder 併進來的。音檔不進筆記 git，放 `data/recordings/<專案ID>/<時間>_<平台>_<名稱>/`（`manifest.json` 有參與者與時間軸）。錄完 bot 在下指令的頻道回報，並在專案記一筆 raw。**還不會轉文字稿**，有逐字稿用 `/note` 上傳。
+
+- **Discord 語音**：`/meet voice`，錄你所在的語音頻道，每人一軌再混成 `mixed.ogg`。所有人離開自動停。bot 要有該頻道的「連線」權限。
+- **Google Meet**：`/meet google <url>`，用 headless Chromium 以訪客身分加入，等主持人放行。另開子程序跑，掛了不影響 bot。要求 Google 登入的會議訪客進不去，要設 `MEET_USER_DATA_DIR`（登入過的 profile）。
+- 需要系統 `ffmpeg`、`npx playwright install chromium`。
+- bot 停止或重啟時會先把錄音收尾存檔（pm2 `kill_timeout` 60 秒）。
+
 ## 之後
 
 - HackMD、Google Drive 來源
-- `/meet` 併入 meeting-recorder
+- 會議錄音轉文字稿（ai.rlong.me 的 Gemini），自動當成 /note 進專案
 - 每週 compaction：STATE 裡完成的搬 log

@@ -38,9 +38,9 @@
 
 | # | Story | 狀態 | 差距 |
 |---|---|---|---|
-| 3.1 | `/meet` 指定語音頻道，bot 進來錄 | ⬜ | `meeting-recorder` 已有 Discord 語音錄音 |
-| 3.2 | `/meet <Google Meet 連結>`，bot 進會議錄 | ⬜ | `meeting-recorder` 已有 Playwright 進 Meet |
-| 3.3 | 錄完的文字稿進專案 | ⬜ | 需要轉錄（計畫走 ai.rlong.me）。轉好當 `/note` 餵進來 |
+| 3.1 | `/meet` 指定語音頻道，bot 進來錄 | ✅ | `/meet voice`，從 meeting-recorder 併入。還沒在真的語音頻道實測 |
+| 3.2 | `/meet <Google Meet 連結>`，bot 進會議錄 | ✅ | `/meet google`，子程序跑 Chromium。還沒在真的會議實測 |
+| 3.3 | 錄完的文字稿進專案 | ⬜ | 錄完會記一筆 raw，但還不會轉文字稿（計畫走 ai.rlong.me Gemini） |
 
 ## 4. 外部來源連結
 
@@ -106,7 +106,8 @@ LiteLLM 查不到有團隊記憶功能，可能是記成別的產品（Letta、m
 - 2026-10-13：@bot 時由 agent 判斷要記錄還是回答。規則是使用者要明確說要記（「幫我記錄」「加入記憶」「加入追蹤」…）才記，沒明說就只回答，像要記的會反問。
 - 2026-10-13：拿掉被動全收，平常對話不聽不存。
 
+- 2026-10-13：pm-bot 跟 meeting-recorder 合成一個 bot。
+
 ## 待決
 
 - Dashboard 公開或登入？
-- pm-bot 跟 meeting-recorder 要合成一個 Discord bot，還是兩個 bot 各自跑？
