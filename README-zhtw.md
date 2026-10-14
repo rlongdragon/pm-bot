@@ -109,7 +109,9 @@ knowledge/
 從 meeting-recorder 併進來的。音檔不進筆記 git，放 `data/recordings/<專案ID>/<時間>_<平台>_<名稱>/`（`manifest.json` 有參與者與時間軸）。錄完 bot 在下指令的頻道回報，並在專案記一筆 raw。**還不會轉文字稿**，有逐字稿用 `/note` 上傳。
 
 - **Discord 語音**：`/meet voice`，錄你所在的語音頻道，每人一軌再混成 `mixed.ogg`。所有人離開自動停。bot 要有該頻道的「連線」權限。
-- **Google Meet**：`/meet google <url>`，用 headless Chromium 以訪客身分加入，等主持人放行。另開子程序跑，掛了不影響 bot。要求 Google 登入的會議訪客進不去，要設 `MEET_USER_DATA_DIR`（登入過的 profile）。
+- **Google Meet**：`/meet google <url>`，Chromium 在 Xvfb 虛擬螢幕上有畫面地跑（無頭模式會被 Meet 當自動程式擋），另開子程序，掛了不影響 bot。
+  - **bot 要有自己的 Google 帳號**：Google 會自動拒絕沒登入的訪客 bot（主持人收不到要求），機房 IP 連 Open 會議也進不去。在伺服器跑 `npm run meet:login`，它印出一個網址（`<PUBLIC_BASE_URL>/login/<一次性代碼>`，由 bot 的 HTTP 轉給腳本），打開就是遠端的 Chromium 畫面，用 bot 的帳號登入（Ctrl+V 可以貼密碼）。登入完自動關閉，profile 存在 `data/meet-profile/`，之後 `/meet google` 自動用。要換帳號就刪掉那個資料夾再跑一次。
+  - 會議維持預設的 Trusted：把 bot 帳號加進日曆邀請就直接進；臨時會議它會敲門，主持人按允許。
 - 需要系統 `ffmpeg`、`npx playwright install chromium`。
 - bot 停止或重啟時會先把錄音收尾存檔（pm2 `kill_timeout` 60 秒）。
 

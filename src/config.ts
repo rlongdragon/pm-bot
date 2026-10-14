@@ -74,9 +74,12 @@ export const config = {
   meetAloneTimeoutSec: Number(process.env.MEET_ALONE_TIMEOUT_SEC ?? 120),
   /** 等主持人放行最多幾秒 */
   meetAdmitTimeoutSec: Number(process.env.MEET_ADMIT_TIMEOUT_SEC ?? 600),
-  /** 登入過 Google 的 Chromium profile（要登入才能進的會議用）；留空 = 每次全新訪客 */
-  meetUserDataDir: expandHome(process.env.MEET_USER_DATA_DIR) || "",
-  meetHeaded: process.env.MEET_HEADED === "1",
+  /** 登入過 Google 的 Chromium profile（npm run meet:login 會建在 data/meet-profile）；沒有就以訪客進 */
+  meetUserDataDir: expandHome(process.env.MEET_USER_DATA_DIR) || (fs.existsSync("./data/meet-profile") ? path.resolve("./data/meet-profile") : ""),
+  /** 有畫面地跑（沒 DISPLAY 時自動包 xvfb-run）。無頭模式實測會被 Meet 當自動程式擋掉，所以預設開 */
+  meetHeaded: process.env.MEET_HEADED !== "0",
+  /** meet:login 的小伺服器埠（只聽本機；bot 的 HTTP 會把 /login/* 轉過來） */
+  loginPort: Number(process.env.LOGIN_PORT ?? 8791),
   /** 會議轉逐字稿：OpenAI 相容 API（預設 ai.rlong.me 的 LiteLLM），模型要能吃音訊 */
   transcribeBaseUrl: process.env.TRANSCRIBE_BASE_URL || "https://ai.rlong.me/v1",
   transcribeApiKey: process.env.TRANSCRIBE_API_KEY || undefined,

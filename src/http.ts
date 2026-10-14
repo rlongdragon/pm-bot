@@ -5,6 +5,21 @@
 import http from "node:http";
 import { config } from "./config.js";
 
+/** /login/* 轉給 scripts/meet-login.ts 開的小伺服器（含 WebSocket）；沒在跑就 404 */
+function forwardLogin(req: http.IncomingMessage, res: http.ServerResponse, pathname: string) {
+  const up = http.request(
+    { host: "127.0.0.1", port: config.loginPort, path: pathname + (req.url?.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""), method: req.method, headers: req.headers },
+    (r) => {
+      res.writeHead(r.statusCode ?? 502, r.headers);
+      r.pipe(res);
+    },
+  );
+  up.on("error", () => {
+    if (!res.headersSent) res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }).end("現在沒有登入作業。在伺服器跑 npm run meet:login");
+  });
+  req.pipe(up);
+}
+
 export type CallbackHandler = (q: URLSearchParams) => Promise<{ ok: boolean; message: string }>;
 
 function esc(s: string) {
@@ -27,6 +42,10 @@ export function startHttp(onNotion: CallbackHandler): http.Server | null {
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url ?? "/", "http://local");
     const p = u.pathname.replace(/^\/pm-bot(?=\/)/, "");
+    if (p.startsWith("/login/")) {
+      forwardLogin(req, res, p);
+      return;
+    }
     if (req.method === "GET" && p === "/healthz") {
       res.writeHead(200, { "Content-Type": "text/plain" }).end("ok");
       return;
@@ -43,6 +62,28 @@ export function startHttp(onNotion: CallbackHandler): http.Server | null {
       return;
     }
     res.writeHead(404, { "Content-Type": "text/plain" }).end("not found");
+  });
+  server.on("upgrade", (req, socket, head) => {
+    const p = new URL(req.url ?? "/", "http://local").pathname.replace(/^\/pm-bot(?=\/)/, "");
+    if (!p.startsWith("/login/")) {
+      socket.destroy();
+      return;
+    }
+    const up = http.request({ host: "127.0.0.1", port: config.loginPort, path: p, method: "GET", headers: req.headers });
+    up.on("upgrade", (r, upSocket, upHead) => {
+      const lines = [`HTTP/1.1 ${r.statusCode} ${r.statusMessage}`];
+      for (const [k, v] of Object.entries(r.headers)) lines.push(`${k}: ${Array.isArray(v) ? v.join(", ") : v}`);
+      socket.write(lines.join("\r\n") + "\r\n\r\n");
+      if (upHead.length) socket.write(upHead);
+      if (head.length) upSocket.write(head);
+      upSocket.pipe(socket);
+      socket.pipe(upSocket);
+      upSocket.on("error", () => socket.destroy());
+      socket.on("error", () => upSocket.destroy());
+    });
+    up.on("response", () => socket.destroy());
+    up.on("error", () => socket.destroy());
+    up.end();
   });
   server.on("error", (e) => console.warn(`[http] ${(e as Error).message}`));
   server.listen(config.httpPort, config.httpHost, () => console.log(`[http] listening ${config.httpHost}:${config.httpPort}`));

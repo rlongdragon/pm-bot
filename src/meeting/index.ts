@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { VoiceBasedChannel, VoiceState } from "discord.js";
 import { DiscordRecorder } from "./discord-recorder.js";
 import { fmtDuration, type Manifest } from "./session.js";
+import { config } from "../config.js";
 
 /** 一個專案同時只錄一場；Discord 一個伺服器只能有一條語音連線 */
 export interface Active {
@@ -104,16 +105,28 @@ export function onVoiceStateUpdate(oldState: VoiceState) {
   }
 }
 
+let xvfbChecked: boolean | null = null;
+function hasXvfbRun(): boolean {
+  if (xvfbChecked === null) {
+    xvfbChecked = (process.env.PATH ?? "").split(":").some((d) => fs.existsSync(path.join(d, "xvfb-run")));
+    if (!xvfbChecked) console.warn("[meet] 沒有 xvfb-run，Meet 只能無頭模式跑，很可能被當成自動程式擋下。apt install xvfb");
+  }
+  return xvfbChecked;
+}
+
 const here = fileURLToPath(import.meta.url);
 const runner = path.join(path.dirname(here), "meet-runner" + path.extname(here)); // dist 是 .js，tsx 是 .ts
 
 export function startMeet(projectId: string, url: string, reportChannelId: string, invokerId?: string): Active {
   busy(projectId);
   if (!/^https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(url)) throw new Error("要是 https://meet.google.com/xxx-yyyy-zzz 這種連結");
-  const child: ChildProcess = spawn(process.execPath, [...process.execArgv, runner, projectId, url], {
+  // 有畫面地跑但沒有螢幕：包 xvfb-run。沒裝 xvfb 就退回無頭（會被 Meet 擋的機率高，runner 會印警告）
+  const cmd = [process.execPath, ...process.execArgv, runner, projectId, url];
+  const useXvfb = config.meetHeaded && !process.env.DISPLAY && hasXvfbRun();
+  const child: ChildProcess = spawn(useXvfb ? "xvfb-run" : cmd[0], useXvfb ? ["-a", "-s", "-screen 0 1280x800x24", ...cmd] : cmd.slice(1), {
     cwd: process.cwd(),
     stdio: ["ignore", "pipe", "pipe"],
-    env: process.env,
+    env: { ...process.env, ...(useXvfb ? {} : config.meetHeaded && !process.env.DISPLAY ? { MEET_HEADED: "0" } : {}) },
   });
   const code = url.replace(/^https:\/\/meet\.google\.com\//, "").split("?")[0];
   let dir = "";

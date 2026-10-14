@@ -24,13 +24,21 @@ if (!project || !url || !/^https:\/\/meet\.google\.com\//.test(url)) {
   process.exit(1);
 }
 
-const UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+/**
+ * headless 的 UA 會帶 HeadlessChrome，所以要自己給；但版本號一定要跟實際的瀏覽器一致，
+ * 否則 Meet 比對 client hints 發現不符，直接給「你無法加入這場視訊通話」（實測：寫死 Chrome/131 必被擋）。
+ */
+function uaFor(version: string) {
+  return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version.split(".")[0]}.0.0.0 Safari/537.36`;
+}
 const ARGS = [
   "--use-fake-ui-for-media-stream",
   "--use-fake-device-for-media-stream",
   "--autoplay-policy=no-user-gesture-required",
   "--disable-blink-features=AutomationControlled",
   "--lang=zh-TW",
+  // 登入用的 profile（scripts/meet-login.ts）也用 basic，cookie 才解得開
+  "--password-store=basic",
 ];
 
 const session = new RecordingSession(project, "meet", url, url.replace(/^https:\/\/meet\.google\.com\//, "").split("?")[0]);
@@ -57,13 +65,23 @@ main().catch(async (e) => {
 
 async function main() {
   emit("status", { message: "開啟會議頁面", dir: session.dir });
-  const ctxOpts = { userAgent: UA, locale: "zh-TW", viewport: { width: 1280, height: 800 }, permissions: ["microphone", "camera"] as string[] };
+  const headless = !config.meetHeaded || !process.env.DISPLAY;
+  if (headless) console.error("[meet] 無頭模式（沒有 DISPLAY）：Meet 很可能把它當自動程式擋下");
+  const ctxOpts = (ua?: string) => ({ ...(ua ? { userAgent: ua } : {}), locale: "zh-TW", viewport: { width: 1280, height: 800 }, permissions: ["microphone", "camera"] as string[] });
   if (config.meetUserDataDir) {
-    context = await chromium.launchPersistentContext(config.meetUserDataDir, { channel: "chromium", headless: !config.meetHeaded, args: ARGS, ...ctxOpts });
+    let ua: string | undefined;
+    if (headless) {
+      // persistent context 建立時就要給 UA，先開一個拿版本號
+      const probe = await chromium.launch({ channel: "chromium", headless: true });
+      ua = uaFor(probe.version());
+      await probe.close();
+    }
+    context = await chromium.launchPersistentContext(config.meetUserDataDir, { channel: "chromium", headless, args: ARGS, ...ctxOpts(ua) });
   } else {
-    const browser = await chromium.launch({ channel: "chromium", headless: !config.meetHeaded, args: ARGS });
-    context = await browser.newContext(ctxOpts);
+    const browser = await chromium.launch({ channel: "chromium", headless, args: ARGS });
+    context = await browser.newContext(ctxOpts(headless ? uaFor(browser.version()) : undefined));
   }
+  console.error(`[meet] ${headless ? "headless" : "headed"} profile=${config.meetUserDataDir || "(訪客)"} ua: ${await page_ua(context)}`);
   page = context.pages()[0] ?? (await context.newPage());
   await page.addInitScript(INJECT);
   await page.exposeFunction("__rec_chunk", (b64: string) => {
@@ -79,26 +97,30 @@ async function main() {
   await page.goto(url, { waitUntil: "domcontentloaded" });
   await dismissPopups();
 
-  if (await page.locator('a[href*="accounts.google.com"], text=/登入|Sign in/i').first().isVisible().catch(() => false)) {
-    const nameBox = page.locator('input[type="text"]').first();
-    if (!(await nameBox.isVisible().catch(() => false))) {
-      throw new Error("這場會議要求 Google 帳號登入，訪客進不去。要用登入過的 profile：設 MEET_USER_DATA_DIR");
-    }
-  }
-
+  // 大廳有兩種：訪客要填名字；登入的帳號直接顯示「要求加入」。等到哪個先出現就走哪條
   const nameInput = page.locator('input[type="text"]').first();
-  await nameInput.waitFor({ state: "visible", timeout: 30_000 }).catch(() => {
-    throw new Error("30 秒內沒看到填名字的欄位。會議代碼可能錯了，或 Meet 改版");
-  });
-  await nameInput.fill(botName);
-  session.event("name", botName);
+  const joinBtn = page.getByRole("button", { name: /要求加入|立即加入|Ask to join|Join now|加入/i }).first();
+  const first = await Promise.race([
+    nameInput.waitFor({ state: "visible", timeout: 30_000 }).then(() => "name" as const),
+    joinBtn.waitFor({ state: "visible", timeout: 30_000 }).then(() => "join" as const),
+  ]).catch(() => null);
+  if (!first) {
+    if (await page.locator('a[href*="accounts.google.com"], text=/登入|Sign in/i').first().isVisible().catch(() => false))
+      throw new Error("這場會議要求 Google 帳號登入。在伺服器跑 npm run meet:login 讓 bot 登入");
+    throw new Error("30 秒內沒看到大廳（填名字或加入按鈕）。會議代碼可能錯了，或 Meet 改版");
+  }
+  if (await nameInput.isVisible().catch(() => false)) {
+    await nameInput.fill(botName);
+    session.event("name", botName);
+  } else {
+    session.event("signed-in");
+  }
 
   for (const re of [/關閉麥克風|Turn off microphone/i, /關閉攝影機|Turn off camera/i]) {
     const b = page.getByRole("button", { name: re }).first();
     if (await b.isVisible().catch(() => false)) await b.click().catch(() => {});
   }
 
-  const joinBtn = page.getByRole("button", { name: /要求加入|立即加入|Ask to join|Join now|加入/i }).first();
   await joinBtn.waitFor({ state: "visible", timeout: 30_000 });
   await joinBtn.click();
   session.event("asked-to-join");
@@ -139,6 +161,11 @@ async function main() {
     }
   }
   await shutdown(0);
+}
+
+async function page_ua(ctx: BrowserContext): Promise<string> {
+  const p = ctx.pages()[0] ?? (await ctx.newPage());
+  return p.evaluate("navigator.userAgent") as Promise<string>;
 }
 
 async function dismissPopups() {
