@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 import * as store from "./store.js";
-import { dashed, notion, parseNotion, propText } from "./sources/notion.js";
+import { dashed, notion, parseNotion, propText, type NotionCred } from "./sources/notion.js";
+import { credFor } from "./sources/notion-oauth.js";
 
 /**
  * Notion 看板 = STATE.md 的顯示。bot 單向推，agent 碰不到。
@@ -98,17 +99,17 @@ function rowSig(r: any) {
   return JSON.stringify([propText(p["任務"]), propText(p["狀態"]), propText(p["負責人"]), d(p["期限"]), propText(p["備註"]), propText(p["來源"]), d(p["更新"])]);
 }
 
-function token(): string {
-  const t = config.notionBoardToken;
-  if (!t) throw new Error("沒設 NOTION_BOARD_TOKEN（或 NOTION_TOKEN）。看板用的 integration 要勾「讀取、更新、插入內容」");
-  return t;
+function token(p: store.Project): NotionCred {
+  const c = credFor(p.id, config.notionBoardToken);
+  if (!c) throw new Error("還沒授權 Notion（`/link notion`），也沒設 NOTION_BOARD_TOKEN。看板要「讀取、更新、插入內容」權限");
+  return c;
 }
 
 /** 在使用者給的頁面底下建一個看板資料庫 */
 export async function createBoard(p: store.Project, pageUrl: string): Promise<{ databaseId: string; url: string }> {
   const pageId = parseNotion(pageUrl);
   if (!pageId) throw new Error("看不懂這個 Notion 網址");
-  const t = token();
+  const t = token(p);
   try {
     await notion(t, "GET", `/pages/${dashed(pageId)}`);
   } catch (e: any) {
@@ -152,7 +153,7 @@ export interface PushResult {
 /** 把 STATE.md 推到看板：新增、更新有變的、STATE 裡沒了的未完成卡片封存（完成的保留當歷史） */
 export async function pushBoard(p: store.Project): Promise<PushResult> {
   if (!p.board) throw new Error("這個專案還沒設看板。`/board set url:<Notion 頁面>`");
-  const t = token();
+  const t = token(p);
   const dbId = dashed(p.board.databaseId);
   const cards = parseState(fs.readFileSync(path.join(store.projectDir(p.id), "STATE.md"), "utf8"));
 

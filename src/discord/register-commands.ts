@@ -68,6 +68,7 @@ const commands = [
     )
     .addSubcommand((s) => s.setName("sync").setDescription("立刻重新抓全部來源"))
     .addSubcommand((s) => s.setName("github").setDescription("GitHub 授權頁面：勾要給我看的 repo"))
+    .addSubcommand((s) => s.setName("notion").setDescription("Notion 授權頁面：勾要給我看的頁面，勾完自動連上"))
     .toJSON(),
   new SlashCommandBuilder()
     .setName("board")

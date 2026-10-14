@@ -4,13 +4,14 @@ import fs from "node:fs";
 import { config } from "../config.js";
 import * as store from "../store.js";
 import { parseGithub, syncGithub } from "./github.js";
-import { parseNotion, syncNotion } from "./notion.js";
+import { parseNotion, rootOf, syncNotion } from "./notion.js";
+import { authOf, credFor, grantedPages } from "./notion-oauth.js";
 import type { Link, LinkType } from "./types.js";
 
 export type { Link } from "./types.js";
 
 export function parseLink(input: string): { type: LinkType; target: string } | null {
-  if (/notion\.(so|site)/i.test(input)) {
+  if (/notion\.(so|site|com)/i.test(input)) {
     const t = parseNotion(input);
     return t ? { type: "notion", target: t } : null;
   }
@@ -35,7 +36,7 @@ function newLinkId(p: store.Project) {
 async function syncOne(p: store.Project, l: Link): Promise<boolean> {
   const dir = linkDir(p.id, l);
   try {
-    const r = l.type === "github" ? await syncGithub(l, dir) : await syncNotion(l, dir);
+    const r = l.type === "github" ? await syncGithub(l, dir) : await syncNotion(l, dir, credFor(p.id));
     l.title = r.title;
     l.error = undefined;
     if (r.changed) l.lastChangeAt = new Date().toISOString();
@@ -60,6 +61,12 @@ export async function addLink(p: store.Project, input: string, by?: string): Pro
     addedAt: new Date().toISOString(),
     addedBy: by,
   };
+  if (l.type === "notion" && authOf(p.id)) {
+    // 用授權的專案只能連自己授權時勾的頁面（含底下的子頁面）
+    const root = await rootOf(credFor(p.id)!, l.target);
+    if (!root || !grantedPages(p.id).includes(root))
+      throw new Error("這頁不在這個專案的 Notion 授權範圍裡。`/link notion` 重新授權、把它勾起來");
+  }
   await syncOne(p, l); // 失敗會丟錯，不會加進去
   p.links.push(l);
   store.save();

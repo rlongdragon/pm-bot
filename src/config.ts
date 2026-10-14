@@ -57,6 +57,15 @@ export const config = {
   notionToken: process.env.NOTION_TOKEN || undefined,
   /** Notion 看板用的 integration（要 Update、Insert），只分享給看板頁；留空 = 用 NOTION_TOKEN */
   notionBoardToken: process.env.NOTION_BOARD_TOKEN || process.env.NOTION_TOKEN || undefined,
+  /** Notion OAuth：/link notion 開授權頁，使用者勾頁面就好。要在 Notion 建 OAuth 連接，redirect URI 填 <PUBLIC_BASE_URL>/notion/callback */
+  notionClientId: process.env.NOTION_OAUTH_CLIENT_ID || undefined,
+  notionClientSecret: process.env.NOTION_OAUTH_CLIENT_SECRET || undefined,
+  /** 外面連得到 bot HTTP 伺服器的網址，結尾不要 /。例如 http://<主機 IP>:8790 */
+  publicBaseUrl: (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, ""),
+  /** bot 自己的 HTTP 伺服器，只接 OAuth callback；0 = 不開 */
+  httpPort: Number(process.env.HTTP_PORT ?? 8790),
+  /** 0.0.0.0 = 直接對外；127.0.0.1 = 只給本機（前面要有反向代理） */
+  httpHost: process.env.HTTP_HOST || "127.0.0.1",
   /** 會議錄音（/meet）。音檔不進筆記 git，放這裡：<dir>/<專案ID>/<時間>_<平台>_<名稱>/ */
   recordingsDir: path.resolve(expandHome(process.env.RECORDINGS_DIR) || "./data/recordings"),
   opusBitrate: process.env.OPUS_BITRATE || "64k",

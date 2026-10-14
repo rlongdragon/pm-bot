@@ -1,5 +1,4 @@
 import path from "node:path";
-import { config } from "../config.js";
 import type { Link, SyncResult } from "./types.js";
 import { oneLine, writeIfChanged } from "./write.js";
 
@@ -12,7 +11,8 @@ export function parseNotion(input: string): string | null {
   let p = s;
   try {
     const u = new URL(s);
-    if (!/(^|\.)notion\.(so|site)$/i.test(u.hostname)) return null;
+    // notion.so、notion.site、app.notion.com（API 回的網址是 app.notion.com/p/<id>）
+    if (!/(^|\.)notion\.(so|site|com)$/i.test(u.hostname)) return null;
     p = u.pathname;
   } catch {
     // 也接受直接貼 id
@@ -27,22 +27,35 @@ export function dashed(id: string) {
   return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
 }
 
+/** 呼叫 Notion 用的憑證。有 refresh 的（OAuth）遇到 401 會換新 token 重試一次 */
+export interface NotionCred {
+  token: string;
+  refresh?: () => Promise<string | null>;
+}
+
 let last = 0;
-export async function notion(token: string, method: string, endpoint: string, body?: unknown): Promise<any> {
+export async function notion(cred: NotionCred, method: string, endpoint: string, body?: unknown, retried = false): Promise<any> {
   // Notion 限制平均每秒 3 次
   const wait = last + 350 - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   last = Date.now();
   const r = await fetch(API + endpoint, {
     method,
-    headers: { Authorization: `Bearer ${token}`, "Notion-Version": VERSION, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${cred.token}`, "Notion-Version": VERSION, "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(30_000),
   });
   const j = await r.json().catch(() => ({}));
   if (r.status === 429) {
     await new Promise((res) => setTimeout(res, Number(r.headers.get("retry-after") ?? 2) * 1000));
-    return notion(token, method, endpoint, body);
+    return notion(cred, method, endpoint, body, retried);
+  }
+  if (r.status === 401 && cred.refresh && !retried) {
+    const t = await cred.refresh();
+    if (t) {
+      cred.token = t;
+      return notion(cred, method, endpoint, body, true);
+    }
   }
   if (!r.ok) {
     const e = new Error(`Notion ${r.status} ${j.code ?? ""}：${j.message ?? ""}`) as Error & { status: number; code?: string };
@@ -184,7 +197,7 @@ export async function renderBlocks(blocks: any[], fetchChildren: FetchChildren, 
   return out.join("\n");
 }
 
-async function allChildren(token: string, id: string): Promise<any[]> {
+async function allChildren(token: NotionCred, id: string): Promise<any[]> {
   const res: any[] = [];
   let cursor: string | undefined;
   do {
@@ -242,13 +255,78 @@ function titleOf(props: Record<string, any>): string {
   return t ? rt(t.title) : "";
 }
 
+/** 這頁（或資料庫）所屬的最上層頁面 id：沿 parent 往上走到 workspace。讀不到就回 null */
+export async function rootOf(token: NotionCred, id: string): Promise<string | null> {
+  let cur = dashed(id);
+  let kind: "page" | "database" | "block" = "page";
+  for (let hop = 0; hop < 20; hop++) {
+    let obj: any;
+    try {
+      obj = await notion(token, "GET", kind === "block" ? `/blocks/${cur}` : kind === "database" ? `/databases/${cur}` : `/pages/${cur}`);
+    } catch (e: any) {
+      if (kind === "page" && hop === 0 && (e.status === 404 || e.status === 400)) {
+        kind = "database";
+        hop--;
+        continue;
+      }
+      return null;
+    }
+    const par = obj.parent ?? {};
+    if (par.type === "workspace" || !par.type) return (kind === "block" ? cur : obj.id).replace(/-/g, "");
+    if (par.type === "page_id") (cur = par.page_id), (kind = "page");
+    else if (par.type === "database_id") (cur = par.database_id), (kind = "database");
+    else if (par.type === "block_id") (cur = par.block_id), (kind = "block");
+    else return null;
+  }
+  return null;
+}
+
 /* ---------- 同步 ---------- */
 
-export async function syncNotion(link: Link, dir: string): Promise<SyncResult> {
-  const token = config.notionToken;
-  if (!token) throw new Error("沒設 NOTION_TOKEN。到 notion.so/profile/integrations 建一個只有 Read content 權限的 integration");
+/** 錯誤訊息要教人用 /link notion 還是手動加 Connections */
+let oauthHint = false;
+export function setOauthHint(v: boolean) {
+  oauthHint = v;
+}
+
+/**
+ * 授權時勾了哪些頁面：search 會連子頁面一起回，只留最上層的（父頁面不在清單裡的）。
+ * 父層是 block（例如放在欄位裡的頁面）時往上找到所屬頁面再判斷。
+ */
+export async function sharedRoots(token: NotionCred, limit = 200): Promise<{ id: string; title: string; url: string; type: "page" | "database" }[]> {
+  const items: any[] = [];
+  let cursor: string | undefined;
+  do {
+    const j = await notion(token, "POST", "/search", { page_size: 100, ...(cursor ? { start_cursor: cursor } : {}) });
+    items.push(...j.results);
+    cursor = j.has_more && items.length < limit ? j.next_cursor : undefined;
+  } while (cursor);
+  const ids = new Set(items.map((x) => x.id.replace(/-/g, "")));
+  const roots = [];
+  for (const x of items) {
+    if (x.archived || x.in_trash) continue;
+    let parent = x.parent;
+    for (let hop = 0; parent?.type === "block_id" && hop < 5; hop++) {
+      try {
+        parent = (await notion(token, "GET", `/blocks/${parent.block_id}`)).parent;
+      } catch {
+        parent = null;
+      }
+    }
+    const pid = (parent?.page_id ?? parent?.database_id ?? "").replace(/-/g, "");
+    if (pid && ids.has(pid)) continue;
+    const title = x.object === "database" ? rt(x.title) : titleOf(x.properties);
+    roots.push({ id: x.id.replace(/-/g, ""), title: title || "（無標題）", url: x.url, type: x.object });
+  }
+  return roots;
+}
+
+export async function syncNotion(link: Link, dir: string, token: NotionCred | null): Promise<SyncResult> {
+  if (!token) throw new Error(oauthHint ? "還沒授權 Notion。先用 `/link notion` 授權" : "沒設 NOTION_TOKEN，也沒設定 Notion OAuth");
   const id = dashed(link.target);
-  const notShared = "找不到。要在那個 Notion 頁面右上角 ••• > Connections 加入你的 integration";
+  const notShared = oauthHint
+    ? "讀不到這頁。用 `/link notion` 重新授權，在 Notion 的頁面清單勾這一頁"
+    : "找不到。要在那個 Notion 頁面右上角 ••• > Connections 加入你的 integration";
 
   let page: any = null;
   try {

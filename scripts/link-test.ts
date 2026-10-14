@@ -18,6 +18,8 @@ assert.equal(
 assert.equal(parseNotion("https://www.notion.so/ws/Release-Page-fedcba9876543210fedcba987654321a"), "fedcba9876543210fedcba987654321a", "標題結尾是 a-f 也不能吃到");
 assert.equal(parseNotion("0123abcd-0123-4567-89ab-0123456789ab"), "0123abcd0123456789ab0123456789ab", "dashed uuid");
 assert.equal(parseNotion("https://myteam.notion.site/Public-Doc-0123456789abcdef0123456789abcdef"), "0123456789abcdef0123456789abcdef");
+assert.equal(parseNotion("https://app.notion.com/p/0123456789abcdef0123456789abcdef"), "0123456789abcdef0123456789abcdef", "API 回的 app.notion.com/p/ 網址");
+assert.deepEqual(parseLink("https://app.notion.com/p/0123456789abcdef0123456789abcdef"), { type: "notion", target: "0123456789abcdef0123456789abcdef" });
 assert.equal(parseLink("https://example.com/x"), null);
 console.log("✓ 網址解析");
 

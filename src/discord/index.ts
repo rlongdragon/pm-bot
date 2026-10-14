@@ -2,7 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
+  StringSelectMenuBuilder,
   GatewayIntentBits,
   MessageFlags,
   Partials,
@@ -18,6 +22,9 @@ import { commitKnowledge, enqueue, ensureKnowledgeRepo, runAgent, type AgentResu
 import { askPrompt, meetingPrompt, mentionPrompt, notePrompt, reviewPrompt } from "../prompts.js";
 import { addLink, removeLink, syncLinks } from "../sources/index.js";
 import { appConfigured, installUrl } from "../sources/github-app.js";
+import { setOauthHint, sharedRoots } from "../sources/notion.js";
+import { authOf, authorizeUrl, claimPages, credFor, finishAuth, oauthConfigured, type AuthContext } from "../sources/notion-oauth.js";
+import { startHttp } from "../http.js";
 import { createBoard, pushBoard } from "../board.js";
 import * as meeting from "../meeting/index.js";
 import { fmtDuration, sanitize, type Manifest } from "../meeting/session.js";
@@ -82,7 +89,7 @@ const client = new Client({
 
 client.once("clientReady", () => {
   console.log(
-    `[discord] logged in as ${client.user?.tag}, content-intent=${hasContentIntent ? "on" : "OFF"}, allowed=${config.allowedUserIds.join(",") || "ALL"}, knowledge=${config.knowledgeDir}, claude=${config.claudeConfigDir}`,
+    `[discord] logged in as ${client.user?.tag}, content-intent=${hasContentIntent ? "on" : "OFF"}, allowed=${config.allowedUserIds.join(",") || "ALL"}, model=${config.model ?? "default"}, knowledge=${config.knowledgeDir}, claude=${config.claudeConfigDir}`,
   );
   if (config.reviewHour >= 0) {
     setInterval(() => void reviewDue(), 10 * 60_000);
@@ -447,7 +454,26 @@ async function reviewDue() {
 /* ---------- 指令 ---------- */
 
 client.on("interactionCreate", async (i) => {
+  if (i.isStringSelectMenu() && i.customId.startsWith(PICK_PREFIX)) {
+    await onPick(i).catch((e) => {
+      console.error("[discord] pick error:", e);
+      i.followUp({ content: `錯誤：${(e as Error).message}`, flags: MessageFlags.Ephemeral }).catch(() => {});
+    });
+    return;
+  }
   if (!i.isChatInputCommand()) return;
+  // Discord 只給 3 秒回應。收到時已經晚了就記下來；2 秒內還沒回就先 defer，之後的 reply 轉成 editReply
+  const age = Date.now() - i.createdTimestamp;
+  if (age > 1000) console.warn(`[discord] /${i.commandName} 收到時已過 ${age}ms`);
+  const guard = setTimeout(() => {
+    if (i.deferred || i.replied) return;
+    i.deferReply({ flags: MessageFlags.Ephemeral })
+      .then(() => {
+        console.warn(`[discord] /${i.commandName} 2 秒沒回，先 defer`);
+        (i as { reply: unknown }).reply = (o: Parameters<typeof i.editReply>[0]) => i.editReply(o);
+      })
+      .catch(() => {});
+  }, 2000);
   try {
     switch (i.commandName) {
       case "project":
@@ -470,6 +496,8 @@ client.on("interactionCreate", async (i) => {
     const msg = `錯誤：${(e as Error).message}`;
     if (i.deferred || i.replied) await i.editReply(msg).catch(() => {});
     else await i.reply({ content: msg, flags: MessageFlags.Ephemeral }).catch(() => {});
+  } finally {
+    clearTimeout(guard);
   }
 });
 
@@ -608,12 +636,40 @@ async function cmdLink(i: ChatInputCommandInteraction) {
   const quiet = { allowedMentions: { users: [] as string[] } };
   if (sub === "list") {
     const ls = p.links ?? [];
-    if (!ls.length) return i.reply({ content: "還沒有外部來源。`/link add url:<GitHub repo 或 Notion 網址>`", flags: MessageFlags.Ephemeral });
+    const na = authOf(p.id);
+    const head = na ? `Notion 授權：「${na.workspaceName}」\n` : "";
+    if (!ls.length) return i.reply({ content: head + "還沒有外部來源。`/link add url:<GitHub repo 或 Notion 網址>`", flags: MessageFlags.Ephemeral });
     const lines = ls.map(
       (l) =>
         `\`${l.id}\` ${l.type === "github" ? "🐙" : "📝"} [${l.title}](<${l.url}>)　同步 ${fmtDate(l.lastSyncAt)}　更新 ${fmtDate(l.lastChangeAt)}${l.error ? `\n　⚠️ ${l.error}` : ""}`,
     );
-    return i.reply({ content: lines.join("\n"), ...quiet });
+    return i.reply({ content: (head + lines.join("\n")).slice(0, 2000), ...quiet });
+  }
+  if (sub === "notion") {
+    if (!isAdmin(i.user.id)) return i.reply({ content: "沒權限", flags: MessageFlags.Ephemeral });
+    if (!oauthConfigured())
+      return i.reply({ content: "還沒設定 Notion 授權（.env 的 NOTION_OAUTH_CLIENT_ID、NOTION_OAUTH_CLIENT_SECRET、PUBLIC_BASE_URL）", flags: MessageFlags.Ephemeral });
+    const a = authOf(p.id);
+    const btn = new ButtonBuilder()
+      .setStyle(ButtonStyle.Link)
+      .setLabel(a ? "重新授權 Notion" : "授權 Notion")
+      .setURL(authorizeUrl({ projectId: p.id, userId: i.user.id, channelId: i.channelId }));
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(btn);
+    if (!a)
+      return i.reply({
+        content: "按下面的按鈕，在 Notion 勾要給我看的頁面（看板要放的頁面也勾）。連結 15 分鐘內有效。",
+        components: [row],
+        flags: MessageFlags.Ephemeral,
+      });
+    // 已授權：直接列出能選的頁面
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const menu = await pageMenu(p, i.user.id);
+    return i.editReply({
+      content:
+        `Notion 授權的是「${a.workspaceName}」。\n` +
+        (menu ? "選要連到這個專案的頁面：" : "這個專案勾的頁面都已經連上了。要加新的頁面就重新授權、多勾幾頁。"),
+      components: menu ? [menu, row] : [row],
+    });
   }
   if (sub === "github") {
     if (!appConfigured()) return i.reply({ content: "還沒設定 GitHub App（.env 的 GITHUB_APP_ID、GITHUB_APP_PRIVATE_KEY_FILE）", flags: MessageFlags.Ephemeral });
@@ -732,6 +788,87 @@ async function cmdReview(i: ChatInputCommandInteraction) {
   await i.deferReply({ flags: MessageFlags.Ephemeral });
   await i.editReply(`巡檢 **${p.name}**：${await reviewProject(p, "manual")}`.slice(0, 2000));
 }
+
+/* ---------- Notion 授權 callback ---------- */
+
+const PICK_PREFIX = "notionpick:";
+
+/**
+ * 選頁面的下拉選單。只列這個專案授權時勾的頁面（claimPages 記的），
+ * 別的專案勾的頁面雖然同一個 token 讀得到，但不會出現在這裡。
+ */
+async function pageMenu(p: store.Project, userId: string): Promise<ActionRowBuilder<StringSelectMenuBuilder> | null> {
+  const roots = await sharedRoots(credFor(p.id)!);
+  const mine = new Set(claimPages(p.id, roots.map((r) => r.id)));
+  const linked = new Set((p.links ?? []).filter((l) => l.type === "notion").map((l) => l.target));
+  const fresh = roots.filter((r) => mine.has(r.id) && !linked.has(r.id)).slice(0, 25);
+  if (!fresh.length) return null;
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`${PICK_PREFIX}${p.id}:${userId}`)
+    .setPlaceholder("選要連到這個專案的 Notion 頁面")
+    .setMinValues(1)
+    .setMaxValues(fresh.length)
+    .addOptions(fresh.map((r) => ({ label: r.title.slice(0, 100), value: r.id, description: r.type === "database" ? "資料庫" : "頁面" })));
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+}
+
+/** 授權完：在下指令的頻道貼選單，讓人選要連哪幾頁 */
+async function linkAuthorized(ctx: AuthContext, workspace: string) {
+  const p = store.getProject(ctx.projectId);
+  if (!p) return;
+  const ch = await client.channels.fetch(ctx.channelId).catch(() => null);
+  const send = async (content: string, components: ActionRowBuilder<StringSelectMenuBuilder>[] = []) => {
+    if (ch && ch.isTextBased() && "send" in ch) {
+      const ok = await ch.send({ content, components, allowedMentions: { users: [ctx.userId] } }).then(() => true, () => false);
+      if (ok) return;
+    }
+    await say(undefined, content, ctx.userId);
+  };
+  try {
+    const menu = await pageMenu(p, ctx.userId);
+    if (menu) await send(`<@${ctx.userId}> Notion「${workspace}」授權好了，選要連到 **${p.name}** 的頁面：`, [menu]);
+    else await send(`<@${ctx.userId}> Notion「${workspace}」授權好了，但沒有新勾的頁面。再 \`/link notion\` 重新授權、多勾幾頁（別的專案已經勾過的頁面不會算到這裡）。`);
+  } catch (e) {
+    await send(`<@${ctx.userId}> Notion 授權好了，但讀頁面清單失敗：${(e as Error).message}`);
+  }
+}
+
+/** 下拉選單選完：連上選的頁面 */
+async function onPick(i: import("discord.js").StringSelectMenuInteraction) {
+  const [, projectId, userId] = i.customId.split(":");
+  if (i.user.id !== userId) return i.reply({ content: "這是別人的選單，自己打 `/link notion`。", flags: MessageFlags.Ephemeral });
+  const p = store.getProject(projectId);
+  if (!p) return i.reply({ content: "專案不存在了", flags: MessageFlags.Ephemeral });
+  await i.deferUpdate();
+  const lines: string[] = [];
+  const added: string[] = [];
+  await enqueue(async () => {
+    for (const id of i.values) {
+      try {
+        const l = await addLink(p, `https://www.notion.so/${id}`, i.user.id);
+        added.push(`[${l.title}](<${l.url}>)`);
+      } catch (e) {
+        lines.push(`⚠️ ${id.slice(0, 8)}：${(e as Error).message}`);
+      }
+    }
+    if (added.length) await commitKnowledge(`link ${p.id} notion ×${added.length}`);
+  });
+  if (added.length) lines.unshift(`🔗 連上 Notion：${added.join("、")}`);
+  await i.editReply({ content: lines.join("\n").slice(0, 2000), components: [], allowedMentions: { users: [] } });
+}
+
+setOauthHint(oauthConfigured());
+startHttp(async (q) => {
+  const err = q.get("error");
+  if (err) return { ok: false, message: err === "access_denied" ? "你取消了授權。要的話回 Discord 重新 /link notion。" : `Notion 回傳錯誤：${err}` };
+  const code = q.get("code");
+  const state = q.get("state");
+  if (!code || !state) return { ok: false, message: "網址少了 code 或 state。" };
+  const { ctx, auth } = await finishAuth(code, state);
+  console.log(`[notion] ${ctx.projectId} authorized workspace=${auth.workspaceName} by=${ctx.userId}`);
+  void linkAuthorized(ctx, auth.workspaceName).catch((e) => console.warn(`[notion] link after auth: ${e.message}`));
+  return { ok: true, message: `已連上 Notion「${auth.workspaceName}」。回 Discord 看結果，這頁可以關了。` };
+});
 
 let shuttingDown = false;
 for (const sig of ["SIGINT", "SIGTERM"] as const) {

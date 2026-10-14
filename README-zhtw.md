@@ -48,7 +48,7 @@ Discord Developer Portal → Bot：打開 **Message Content Intent**（只能在
 | `/ask <q>` | 問問題，保證唯讀（沒有寫入工具） | ALLOWED_USER_IDS |
 | `/note <text> [file]` | 直接記錄（會議結論、文字稿、研究成果） | ALLOWED_USER_IDS |
 | `/review` | 立刻巡檢 | admin |
-| `/link add <url>` / `list` / `remove <id>` / `sync` / `github` | 連 GitHub repo、Notion 頁面或資料庫（唯讀）；`github` 給 GitHub App 授權頁面 | admin（list、github 全部） |
+| `/link add <url>` / `list` / `remove <id>` / `sync` / `github` / `notion` | 連 GitHub repo、Notion 頁面或資料庫（唯讀）；`github` 給 GitHub App 授權頁面；`notion` 開 Notion 授權頁，勾的頁面自動連上 | admin（list、github 全部） |
 | `/board set <Notion 頁面>` / `sync` / `off` | 在 Notion 建看板，STATE.md 有變就自動更新 | admin |
 | `/meet voice [channel]` / `google <url>` / `stop` / `status` | 錄 Discord 語音或 Google Meet | ALLOWED_USER_IDS |
 
@@ -94,11 +94,14 @@ knowledge/
 **來源（唯讀）**：bot 抓、agent 讀。`/link add` 之後，每次 agent 開跑前 bot 檢查有沒有更新（10 分鐘內不重抓），存成 `sources/<github|notion>/...` 的 markdown。agent 拿不到 token。
 
 - GitHub：README、issues、PRs、最近 30 個 commit、`docs/*.md`。用 ETag，沒變回 304 不算額度。私有 repo 建議用 GitHub App：在安裝頁面勾 repo 就授權，設定見 [docs/github-app.md](docs/github-app.md)；也可以用 `GITHUB_TOKEN`（fine-grained、唯讀）。
-- Notion：頁面轉 markdown（含子頁面），資料庫轉表格（最多 500 列）。要 `NOTION_TOKEN`，integration 只勾「讀取內容」，在頁面 ••• > Connections 加入。
+- Notion：頁面轉 markdown（含子頁面），資料庫轉表格（最多 500 列）。
+  - 建議用授權：在 Notion 建 OAuth 連接（勾讀取、更新、插入內容，重新導向 URI 填 `<PUBLIC_BASE_URL>/notion/callback`），把 client id / secret 填進 `.env`。`/link notion` 按按鈕、在 Notion 勾頁面，勾的最上層頁面自動連上（最多 10 個）。token 每個專案一組，存在 `data/notion-auth.json`（權限 600），過期自動換新。
+  - callback 由 bot 自己的 HTTP 伺服器接（`HTTP_PORT`，只回 callback 和 `/healthz`）。`HTTP_HOST=0.0.0.0` 直接對外，`PUBLIC_BASE_URL` 填 `http://<主機 IP>:<port>`；要 https 的話前面放反向代理，`HTTP_HOST` 留 `127.0.0.1`。
+  - 不用授權也可以：`NOTION_TOKEN` 填 internal integration，只勾「讀取內容」，在頁面 ••• > Connections 加入。
 
 **看板（寫入）**：bot 把 STATE.md 的任務推到 Notion 資料庫，分進行中、待決、下一步、完成。單向：Notion 上手動改會被蓋掉。
 
-- 建議另開一個 integration 給看板（`NOTION_BOARD_TOKEN`），勾讀取、更新、插入，**只加入看板那一頁**。靠 Notion 權限保證它寫不到別頁。
+- 有授權的專案，看板用授權的 token（寫得到你勾的所有頁面）。沒授權的話另開一個 integration 給看板（`NOTION_BOARD_TOKEN`），勾讀取、更新、插入，**只加入看板那一頁**，靠 Notion 權限保證它寫不到別頁。
 - 卡片用任務標題對應，從進行中搬到完成會更新同一張；STATE 裡消失的未完成卡封存，完成的保留。
 
 ## 會議錄音
