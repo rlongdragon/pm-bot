@@ -45,6 +45,12 @@ main().catch(async (e) => {
   if (stopping) return; // 使用者 /meet stop 時關掉瀏覽器，等待中的步驟會失敗，那不是錯誤
   failure = String(e?.message ?? e);
   console.error("[meet] fatal:", e);
+  // 任何失敗都留畫面和文字，查 Meet 改版用
+  if (page) {
+    await page.screenshot({ path: path.join(session.dir, "failed.png"), fullPage: true }).catch(() => {});
+    const body = (await page.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 600);
+    console.error("[meet] page url:", page.url(), "text:", body);
+  }
   session.event("error", failure);
   await shutdown(1);
 });
@@ -100,7 +106,14 @@ async function main() {
 
   const admitted = await waitInCall(config.meetAdmitTimeoutSec * 1000);
   if (stopping) return;
-  if (!admitted) throw new Error("等主持人放行逾時，或被拒絕");
+  if (admitted !== true) {
+    // 留下畫面和文字，方便查是 Meet 改版還是真的被擋
+    const shot = path.join(session.dir, "join-failed.png");
+    await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
+    const body = (await page.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 600);
+    console.error("[meet] join failed, page text:", body);
+    throw new Error(admitted === false ? `被 Meet 擋下：「${rejectReason}」` : "等主持人放行逾時");
+  }
   session.event("admitted");
   await page.evaluate("window.__rec_start()");
   session.manifest.files.tracks.push("tracks/meet.webm");
@@ -135,15 +148,21 @@ async function dismissPopups() {
   }
 }
 
-async function waitInCall(timeoutMs: number): Promise<boolean> {
+let rejectReason = "";
+/** true = 進去了；false = 頁面出現被擋的字句（rejectReason 是那一句）；null = 逾時 */
+async function waitInCall(timeoutMs: number): Promise<boolean | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline && !stopping) {
     if (await inCall()) return true;
     const body = (await page.locator("body").innerText().catch(() => "")).slice(0, 4000);
-    if (/拒絕|denied|無法加入|can't join|couldn't join/i.test(body)) return false;
+    const m = body.match(/[^\n]*(拒絕|denied|無法加入|can't join|couldn't join)[^\n]*/i);
+    if (m) {
+      rejectReason = m[0].trim().slice(0, 120);
+      return false;
+    }
     await page.waitForTimeout(2000);
   }
-  return false;
+  return null;
 }
 
 async function inCall() {
