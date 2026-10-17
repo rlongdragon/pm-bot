@@ -15,6 +15,7 @@ import path from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { chromium } from "playwright";
 import { config } from "../src/config.js";
+import { startXvfb } from "../src/meeting/xvfb.js";
 
 const dir = config.meetUserDataDir || path.resolve("data/meet-profile");
 const port = config.loginPort;
@@ -25,21 +26,6 @@ const W = 1280;
 const H = 800;
 
 /* ---------- Xvfb + Chromium ---------- */
-
-function startXvfb(): Promise<{ proc: ChildProcess; display: string }> {
-  return new Promise((resolve, reject) => {
-    // -displayfd 3：Xvfb 自己挑一個沒用的 display 號碼，寫到 fd 3
-    const proc = spawn("Xvfb", ["-displayfd", "3", "-screen", "0", `${W}x${H}x24`, "-nolisten", "tcp"], { stdio: ["ignore", "ignore", "ignore", "pipe"] });
-    let buf = "";
-    proc.stdio[3]!.on("data", (d: Buffer) => {
-      buf += d.toString();
-      const m = buf.match(/(\d+)\n/);
-      if (m) resolve({ proc, display: `:${m[1]}` });
-    });
-    proc.on("exit", (c) => reject(new Error(`Xvfb 起不來（exit ${c}）。要裝 xvfb`)));
-    proc.on("error", reject);
-  });
-}
 
 async function startChrome(display: string): Promise<{ proc: ChildProcess; cdpPort: number }> {
   fs.mkdirSync(dir, { recursive: true });
@@ -307,7 +293,7 @@ async function finish(ok: boolean, message: string) {
     await Promise.race([new Promise((r) => chrome.proc.once("exit", r)), new Promise((r) => setTimeout(r, 10_000))]);
     if (chrome.proc.exitCode === null) chrome.proc.kill("SIGKILL");
   }
-  xvfb.proc.kill("SIGTERM");
+  xvfb.stop();
   server.close();
   console.log(`${ok ? "✅" : "⏹"} ${message}`);
   if (ok) console.log(`之後 /meet google 會用這個 profile。要換帳號就刪掉 ${dir} 再跑一次。`);

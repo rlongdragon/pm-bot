@@ -105,6 +105,16 @@ const commands = [
         .setDescription("把錄音轉成逐字稿並整理成會議紀錄（預設最近一場）")
         .addIntegerOption((o) => o.setName("nth").setDescription("倒數第幾場，1 = 最近一場").setMinValue(1)),
     )
+    .addSubcommand((s) =>
+      s
+        .setName("upload")
+        .setDescription("給我一段錄音（實體會議等），轉逐字稿並整理成會議紀錄")
+        .addAttachmentOption((o) => o.setName("file").setDescription("錄音檔（m4a、mp3、wav、ogg…）"))
+        .addStringOption((o) => o.setName("url").setDescription("或給直接下載的連結（檔案太大貼不上 Discord 時）"))
+        .addStringOption((o) => o.setName("title").setDescription("會議標題，例如「第 3 次小組會議」"))
+        .addStringOption((o) => o.setName("date").setDescription("會議時間，例如 2026-10-14 或 10/14 14:30；留空 = 現在"))
+        .addStringOption((o) => o.setName("people").setDescription("與會者，用、或 , 分隔，幫模型標講者")),
+    )
     .toJSON(),
   new SlashCommandBuilder().setName("review").setDescription("立刻跑一次巡檢（期限、久未更新提醒）").toJSON(),
 ];

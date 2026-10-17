@@ -52,9 +52,9 @@ async function gh(link: Link, endpoint: string, accept = "application/vnd.github
 async function notFound(what: string): Promise<Error> {
   if (appConfigured()) {
     const url = await installUrl().catch(() => null);
-    if (url) return new Error(`看不到 ${what}。私有 repo 要先在 GitHub 授權：<${url}>\n在那頁勾這個 repo、按 Install，再 \`/link add\` 一次`);
+    if (url) return new Error(`看不到 ${what}（網址打錯，或是私有 repo 還沒授權）。先確認網址；私有 repo 要在 GitHub 授權：<${url}>\n在那頁勾這個 repo、按 Install，再 \`/link add\` 一次`);
   }
-  return new Error(`找不到 ${what}。私有 repo 要設定 GitHub App（GITHUB_APP_ID）或 GITHUB_TOKEN`);
+  return new Error(`找不到 ${what}（網址打錯，或是私有 repo 沒有權限）。先確認網址；私有 repo 要設定 GitHub App（GITHUB_APP_ID）或 GITHUB_TOKEN`);
 }
 
 function explain(status: number, body: unknown, what: string): Error {

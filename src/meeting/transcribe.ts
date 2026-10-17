@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
+import { child, clip, flushTraces, startTrace } from "../trace.js";
 import type { Manifest } from "./session.js";
 
 export interface Speech {
@@ -136,7 +137,9 @@ export function buildPrompt(o: { m: Manifest; index: number; total: number; offs
     parts.push(
       discord
         ? `- 講者是：${names.map((n) => `「${n}」`).join("、")}。請直接用名字取代 A、B。`
-        : `- 與會者可能有：${names.map((n) => `「${n}」`).join("、")}（從入會通知抓的，可能不完整）。認得出是誰就用名字，認不出就用 A、B，同一個人前後一致。`,
+        : o.m.platform === "upload"
+          ? `- 與會者有：${names.map((n) => `「${n}」`).join("、")}（使用者提供）。認得出是誰就用名字，認不出就用 A、B，同一個人前後一致。`
+          : `- 與會者可能有：${names.map((n) => `「${n}」`).join("、")}（從入會通知抓的，可能不完整）。認得出是誰就用名字，認不出就用 A、B，同一個人前後一致。`,
     );
   }
   const tl = o.timeline
@@ -162,7 +165,7 @@ export function transcribeEnabled(): boolean {
 }
 
 /** 依序試主模型和備援模型；每個模型重試 2 次。回傳文字和實際用的模型 */
-async function callModel(prompt: string, mp3: string, skip: Set<string>): Promise<{ text: string; model: string }> {
+async function callModel(prompt: string, mp3: string, skip: Set<string>, trace?: ReturnType<typeof startTrace>): Promise<{ text: string; model: string }> {
   const key = await apiKey();
   const audio = fs.readFileSync(mp3).toString("base64");
   const errors: string[] = [];
@@ -176,6 +179,11 @@ async function callModel(prompt: string, mp3: string, skip: Set<string>): Promis
       messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "input_audio", input_audio: { data: audio, format: "mp3" } }] }],
     });
     for (let attempt = 0; attempt < 2; attempt++) {
+      const gen = trace && child(trace, "transcribe", "generation", {
+        model,
+        input: { prompt: clip(prompt, 8000), audio: path.basename(mp3), bytes: audio.length },
+        metadata: { attempt, baseUrl: config.transcribeBaseUrl },
+      });
       try {
         const r = await fetch(config.transcribeBaseUrl.replace(/\/$/, "") + "/chat/completions", {
           method: "POST",
@@ -186,15 +194,25 @@ async function callModel(prompt: string, mp3: string, skip: Set<string>): Promis
         const j: any = await r.json().catch(() => ({}));
         if (r.ok) {
           const text = j.choices?.[0]?.message?.content;
-          if (typeof text === "string" && text.trim()) return { text, model };
+          if (typeof text === "string" && text.trim()) {
+            (gen as any)?.update({ output: clip(text), ...(j.usage ? { usageDetails: j.usage } : {}) });
+            gen?.end();
+            return { text, model };
+          }
           errors.push(`${model}：回了空的內容`);
+          (gen as any)?.update({ level: "WARNING", statusMessage: "回了空的內容" });
+          gen?.end();
         } else {
           const msg = j.error?.message ?? JSON.stringify(j);
           errors.push(`${model} ${r.status}：${String(msg).replace(/\s+/g, " ").slice(0, 120)}`);
+          (gen as any)?.update({ level: "ERROR", statusMessage: `HTTP ${r.status}：${String(msg).slice(0, 300)}` });
+          gen?.end();
           if (r.status < 500 && r.status !== 429) break; // 4xx 重試沒用，換下一個模型
         }
       } catch (e) {
         errors.push(`${model}：${(e as Error).message}`);
+        (gen as any)?.update({ level: "ERROR", statusMessage: (e as Error).message });
+        gen?.end();
       }
       await new Promise((res) => setTimeout(res, 4000 * (attempt + 1)));
     }
@@ -251,11 +269,28 @@ export async function transcribe(dir: string, m: Manifest, label: string, onProg
   const all: Block[] = [];
   const used = new Set<string>();
   const skip = new Set<string>();
+  const trace = startTrace("transcribe", {
+    asType: "chain",
+    tags: [m.project, "transcribe", m.platform],
+    input: { label, platform: m.platform, durationSec: m.durationSec, participants: m.participants.map((p) => p.name), chunks: chunks.length },
+    metadata: { project: m.project, dir: path.basename(dir) },
+  });
   for (const [i, c] of chunks.entries()) {
     if (chunks.length > 1) onProgress?.(`轉錄第 ${i + 1}/${chunks.length} 段`);
     const prevTail = all.flatMap((b) => b.lines).slice(-6);
     const prompt = buildPrompt({ m, index: i, total: chunks.length, offset: c.offset, dur: c.dur, timeline, prevTail });
-    const { text, model } = await callModel(prompt, c.file, skip);
+    let res: { text: string; model: string };
+    try {
+      res = await callModel(prompt, c.file, skip, trace);
+    } catch (e) {
+      if (trace) {
+        (trace.root as any).update({ level: "ERROR", statusMessage: (e as Error).message });
+        trace.root.end();
+        void flushTraces();
+      }
+      throw e;
+    }
+    const { text, model } = res;
     used.add(model);
     const blocks = parseBlocks(text, c.offset);
     if (!blocks.length && text.trim()) all.push({ start: c.offset, end: c.offset + c.dur, lines: [{ speaker: "（格式無法解析，原文）", text: text.trim() }] });
@@ -279,5 +314,10 @@ export async function transcribe(dir: string, m: Manifest, label: string, onProg
   ].join("\n");
   const file = path.join(dir, "transcript.md");
   fs.writeFileSync(file, md);
+  if (trace) {
+    (trace.root as any).update({ output: { lines: utterances.length, speakers, models: [...used], chars: md.length } });
+    trace.root.end();
+    void flushTraces();
+  }
   return { file, markdown: md, lines: utterances.length, speakers, models: [...used] };
 }

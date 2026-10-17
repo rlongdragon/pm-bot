@@ -19,6 +19,7 @@ import {
 import { config, isAdmin, isAllowed } from "../config.js";
 import * as store from "../store.js";
 import { commitKnowledge, enqueue, ensureKnowledgeRepo, runAgent, type AgentResult } from "../agent.js";
+import { shutdownTraces } from "../trace.js";
 import { askPrompt, meetingPrompt, mentionPrompt, notePrompt, reviewPrompt } from "../prompts.js";
 import { addLink, removeLink, syncLinks } from "../sources/index.js";
 import { appConfigured, installUrl } from "../sources/github-app.js";
@@ -30,6 +31,8 @@ import * as meeting from "../meeting/index.js";
 import { fmtDuration, sanitize, type Manifest } from "../meeting/session.js";
 import { transcribe, transcribeEnabled } from "../meeting/transcribe.js";
 import type { Mode } from "../sandbox.js";
+import { MeetingCard, renderCard } from "./meeting-card.js";
+import { download, importAudio, parseImportText, parseWhen, MAX_UPLOAD_BYTES } from "../meeting/import.js";
 
 if (!config.discordToken) {
   console.error("缺 DISCORD_TOKEN，先填 .env");
@@ -163,12 +166,12 @@ async function flushOutbox(p: store.Project) {
 }
 
 /** 跑 agent；成功就把這幾筆移出 pending 並 commit */
-async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label: string, opts: { session?: string; rawIds?: string[] } = {}) {
+async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label: string, opts: { session?: string; rawIds?: string[]; trace?: { userId?: string; channel?: string } } = {}) {
   const r: AgentResult = await enqueue(async () => {
     // 先同步外部來源（有變才抓），讓 agent 看到最新的 sources/
     const synced = await syncLinks(p);
     if (synced.changed) await commitKnowledge(`sync sources ${p.id}`);
-    const res = await runAgent(prompt, { project: p.id, mode, label: `${label}:${p.id}`, resume: opts.session ? store.getSession(p, opts.session) : undefined });
+    const res = await runAgent(prompt, { project: p.id, mode, label: `${label}:${p.id}`, resume: opts.session ? store.getSession(p, opts.session) : undefined, trace: opts.trace });
     if (!res.error && mode === "digest") {
       if (opts.rawIds?.length) store.removePending(p.id, opts.rawIds);
       const changed = await commitKnowledge(`${label} ${p.id}${opts.rawIds?.length ? " " + opts.rawIds.join(",") : ""}`);
@@ -218,9 +221,22 @@ async function say(
   return false;
 }
 
+/** 每個專案同時只有一場會議，所以用專案 id 找卡 */
+const cards = new Map<string, MeetingCard>();
+
+async function newCard(projectId: string, channelId: string, state: ConstructorParameters<typeof MeetingCard>[2]): Promise<MeetingCard> {
+  const c = new MeetingCard(client, channelId, state);
+  cards.set(projectId, c);
+  await c.post();
+  return c;
+}
+
 meeting.setHandlers({
   status: (a, msg) => {
-    if (/已要求加入|開始錄音/.test(msg)) void say(a.reportChannelId, `🎙 ${a.label}：${msg}`, a.invokerId);
+    const c = cards.get(a.projectId);
+    if (!c) return;
+    if (/已要求加入/.test(msg)) void c.update({ phase: "waiting", note: `已要求加入，等主持人放行「${config.meetBotName}」。` });
+    else if (/開始錄音/.test(msg)) void c.update({ phase: "recording", startedAt: Date.now(), note: undefined });
   },
   finished: (f) => void onMeetingFinished(f),
 });
@@ -228,18 +244,18 @@ meeting.setHandlers({
 async function onMeetingFinished(f: meeting.Finished) {
   const m = f.manifest;
   const rel = f.dir ? path.relative(process.cwd(), f.dir) : "";
+  const p = store.getProject(f.projectId);
+  const card =
+    cards.get(f.projectId) ??
+    (await newCard(f.projectId, f.reportChannelId, { phase: "stopped", label: f.label, project: p?.name ?? f.projectId, invokerId: f.invokerId }));
+  cards.delete(f.projectId);
   if (!m?.files.mixed) {
     if (f.dir) fs.rmSync(f.dir, { recursive: true, force: true }); // 沒有聲音就不留空資料夾
-    await say(
-      f.reportChannelId,
-      f.error ? `⚠️ ${f.label} 沒有錄到：${f.error}` : `⏹ ${f.label} 停止了，還沒錄到聲音（可能還在等主持人放行，或沒有人講話）。`,
-      f.invokerId,
-    );
+    await card.update(f.error ? { phase: "failed", note: f.error } : { phase: "nosound", note: "可能還在等主持人放行，或沒有人講話。" });
     return;
   }
   const dur = fmtDuration(m.durationSec ?? 0);
   const names = m.participants.map((x) => x.name).join("、") || "（沒有人講話）";
-  const p = store.getProject(f.projectId);
   let rawNote = "";
   if (p) {
     const started = new Date(m.startedAt).toLocaleString("zh-TW", { hour12: false });
@@ -254,17 +270,17 @@ async function onMeetingFinished(f: meeting.Finished) {
     });
     store.removePending(p.id, [id]);
     await enqueue(() => commitKnowledge(`meeting ${p.id} ${id}`));
-    rawNote = `已記在專案（raw ${id}）。`;
+    rawNote = `已記在專案。`;
   }
   const auto = !!p && transcribeEnabled() && config.transcribeAuto;
-  await say(
-    f.reportChannelId,
-    `⏹ ${f.label} 錄完：長度 ${dur}，參與者 ${names}。${rawNote}\n` +
-      `音檔在伺服器 \`${rel}/mixed.ogg\`${m.platform === "discord" ? "，另有每人一軌" : ""}。` +
-      (auto ? "📝 開始轉逐字稿，好了會貼在這裡。" : "沒有設定自動轉錄，可以用 `/meet transcribe`。"),
-    f.invokerId,
-  );
-  if (auto) void transcribeAndRecord(p!, f.dir, m, f.label, f.reportChannelId, f.invokerId);
+  await card.update({
+    phase: auto ? "transcribing" : "stopped",
+    startedAt: Date.parse(m.startedAt),
+    durationSec: m.durationSec ?? 0,
+    participants: names,
+    note: (auto ? "正在轉逐字稿，好了會更新這張卡。" : "沒有設定自動轉錄，可以用 `/meet transcribe`。") + (rawNote ? "" : "（專案不存在，沒記進筆記）"),
+  });
+  if (auto) void transcribeAndRecord(p!, f.dir, m, f.label, card);
 }
 
 /** agent 寫的會議紀錄：先找指定路徑，找不到就找這次 agent 跑之後 notes/ 底下最新改過的 .md */
@@ -287,17 +303,21 @@ function findMeetingNotes(projectId: string, notesRel: string, since: number): s
 }
 
 /** 轉逐字稿 → 存成專案附件 → raw 一筆 → Claude 寫會議紀錄、更新 STATE → 貼回 Discord（附逐字稿檔） */
-async function transcribeAndRecord(p: store.Project, dir: string, m: Manifest, label: string, reportChannelId: string, invokerId?: string): Promise<void> {
+async function transcribeAndRecord(p: store.Project, dir: string, m: Manifest, label: string, card: MeetingCard): Promise<void> {
   try {
     const t0 = Date.now();
-    const r = await transcribe(dir, m, label, (msg) => console.log(`[transcribe] ${p.id} ${msg}`));
+    const r = await transcribe(dir, m, label, (msg) => {
+      console.log(`[transcribe] ${p.id} ${msg}`);
+      if (/段|chunk|\d+\/\d+/.test(msg)) void card.update({ note: `正在轉逐字稿：${msg}` });
+    });
+    await card.update({ note: "逐字稿好了，正在整理會議紀錄…", transcript: `${r.lines} 句，講者 ${r.speakers.join("、")}` });
     console.log(`[transcribe] ${p.id} ${label} ${r.lines} 句 ${((Date.now() - t0) / 1000).toFixed(0)}s ${r.models.join(",")}`);
     const date = new Date(m.startedAt);
     const day = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
     const hhmm = store.hhmm(date).replace(":", "");
-    const fname = `${day}_${hhmm}_會議逐字稿_${sanitize(label.replace(/^🔊/, ""))}.md`;
+    const fname = `${day}_${hhmm}_會議逐字稿_${sanitize(label.replace(/^[🔊🎤]/, ""))}.md`;
     fs.copyFileSync(r.file, path.join(store.filesDir(p.id), fname));
-    const notesRel = `notes/meetings/${day}_${hhmm}_${sanitize(label.replace(/^🔊/, ""))}.md`;
+    const notesRel = `notes/meetings/${day}_${hhmm}_${sanitize(label.replace(/^[🔊🎤]/, ""))}.md`;
     const idMap = m.platform === "discord" ? m.participants.map((x) => `${x.name}=<@${x.id}>`).join("、") : "";
     const { id: rawId, block } = store.appendRaw({
       project: p.id,
@@ -312,18 +332,18 @@ async function transcribeAndRecord(p: store.Project, dir: string, m: Manifest, l
     const res = await runAndCommit(p, "digest", meetingPrompt(p, rawId, block, `files/${fname}`, notesRel, idMap), "meeting", { rawIds: [rawId] });
     const notesFile = findMeetingNotes(p.id, notesRel, agentStart);
     const files = [{ attachment: r.file, name: fname }];
-    if (notesFile) files.unshift({ attachment: notesFile, name: `${day}_${hhmm}_會議紀錄_${sanitize(label.replace(/^🔊/, ""))}.md` });
-    await say(
-      reportChannelId,
-      `📝 ${label} 會議紀錄${notesFile ? "和逐字稿" : "（逐字稿）"}好了。逐字稿 ${r.lines} 句，講者 ${r.speakers.join("、")}。\n` +
-        (res.error ? `整理時出錯，巡檢會再試：${res.error}` : res.text).slice(0, 1500) +
-        (notesFile ? "" : "\n⚠️ 沒找到會議紀錄檔，只附逐字稿。"),
-      invokerId,
-      files,
+    if (notesFile) files.unshift({ attachment: notesFile, name: `${day}_${hhmm}_會議紀錄_${sanitize(label.replace(/^[🔊🎤]/, ""))}.md` });
+    await card.update(
+      {
+        phase: "done",
+        summary: (res.error ? `整理時出錯，巡檢會再試：${res.error}` : res.text) + (notesFile ? "" : "\n⚠️ 沒找到會議紀錄檔，只附逐字稿。"),
+        note: undefined,
+      },
+      { files },
     );
   } catch (e) {
     console.error(`[transcribe] ${p.id} failed:`, e);
-    await say(reportChannelId, `⚠️ ${label} 轉逐字稿失敗：${(e as Error).message.slice(0, 500)}\n之後可以用 \`/meet transcribe\` 再試一次。`, invokerId);
+    await card.update({ phase: "failed", note: `轉逐字稿失敗：${(e as Error).message.slice(0, 500)}\n之後可以用 \`/meet transcribe\` 再試一次。` });
   }
 }
 
@@ -392,6 +412,23 @@ client.on("messageCreate", async (msg) => {
     const text = stripMention(msg);
     const ctx = await gatherContext(msg);
     const allAtts = [...msg.attachments.values(), ...ctx.atts];
+    // 丟一個錄音檔（或回覆一則有錄音檔的訊息）@我：當成外部會議錄音，轉逐字稿＋會議紀錄
+    const audio = allAtts.find(isAudio);
+    if (audio && (!text || /逐字稿|文字稿|轉錄|轉文字|紀錄|記錄|錄音|整理/.test(text))) {
+      if (!transcribeEnabled()) {
+        await msg.reply("沒有設定轉錄（TRANSCRIBE_MODEL / TRANSCRIBE_API_KEY）");
+        return;
+      }
+      if (audio.size > MAX_UPLOAD_BYTES) {
+        await msg.reply(`檔案太大（上限 ${MAX_UPLOAD_BYTES / 1048576} MB）`);
+        return;
+      }
+      const parsed = parseImportText(text, audio.name);
+      const card = await startImport(p, resolveChannelId(ch), msg.author.id, { url: audio.url, filename: audio.name, ...parsed });
+      await msg.react("🎤").catch(() => {});
+      if (!card.url) await msg.reply("貼不進這個頻道，狀態改私訊你。").catch(() => {});
+      return;
+    }
     if (!text && !allAtts.length && !ctx.lines.length) {
       await msg.reply("要我做什麼？要記錄就說「幫我記錄」或「加入追蹤」，要問就直接問。");
       return;
@@ -409,7 +446,7 @@ client.on("messageCreate", async (msg) => {
     });
     store.touch(p, "lastRecordAt");
     const chId = resolveChannelId(ch);
-    const r = await runAndCommit(p, "digest", mentionPrompt(p, rawId, block), "mention", { session: `mention:${chId}`, rawIds: [rawId] });
+    const r = await runAndCommit(p, "digest", mentionPrompt(p, rawId, block), "mention", { session: `mention:${chId}`, rawIds: [rawId], trace: { userId: msg.author.id, channel: chId } });
     await replyChunked(msg, r.error ? `出錯了，這則已經存成 raw ${rawId}，巡檢時會再整理一次。\n\`${r.error}\`` : r.text || "（沒有回覆）");
   } catch (e) {
     console.error("[mention] failed:", e);
@@ -603,7 +640,7 @@ async function cmdAsk(i: ChatInputCommandInteraction) {
   const p = needProject(i);
   const q = i.options.getString("q", true);
   await i.deferReply();
-  const r = await runAndCommit(p, "ask", askPrompt(p, i.user.id, q), "ask", { session: `ask:${hereId(i)}` });
+  const r = await runAndCommit(p, "ask", askPrompt(p, i.user.id, q), "ask", { session: `ask:${hereId(i)}`, trace: { userId: i.user.id, channel: hereId(i) } });
   const chunks = splitDiscord(r.error ? `出錯：${r.error}` : r.text || "（沒有回覆）");
   await i.editReply({ content: `> ${q.slice(0, 200)}\n\n${chunks[0]}`.slice(0, 2000), allowedMentions: { users: [] } });
   for (const c of chunks.slice(1)) await i.followUp({ content: c, allowedMentions: { users: [] } });
@@ -748,38 +785,128 @@ async function cmdMeet(i: ChatInputCommandInteraction) {
     if (!pick) return i.reply({ content: dirs.length ? `只有 ${dirs.length} 場錄音` : "這個專案還沒有錄音", flags: MessageFlags.Ephemeral });
     const dir = path.join(base, pick);
     const m: Manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
-    const label = m.platform === "discord" ? `🔊${m.source.match(/#(.+?) \(/)?.[1] ?? "語音"}` : `Google Meet ${m.source.replace(/^https:\/\/meet\.google\.com\//, "")}`;
-    await i.reply(`📝 開始轉 ${label}（${new Date(m.startedAt).toLocaleString("zh-TW", { hour12: false })}，${fmtDuration(m.durationSec ?? 0)}），好了會貼在這裡。` + permWarning(i));
-    void transcribeAndRecord(p, dir, m, label, i.channelId, i.user.id);
+    const label = labelOf(m);
+    await ackWithCard(i, p.id, {
+      phase: "transcribing",
+      label,
+      project: p.name,
+      invokerId: i.user.id,
+      startedAt: Date.parse(m.startedAt),
+      durationSec: m.durationSec ?? 0,
+      participants: m.participants.map((x) => x.name).join("、") || undefined,
+      note: "正在轉逐字稿，好了會更新這張卡。",
+    });
+    const card = cards.get(p.id)!;
+    cards.delete(p.id);
+    void transcribeAndRecord(p, dir, m, label, card);
+    return;
+  }
+  if (sub === "upload") {
+    if (!transcribeEnabled()) return i.reply({ content: "沒有設定轉錄：要 TRANSCRIBE_MODEL 和 TRANSCRIBE_API_KEY（或 _FILE）", flags: MessageFlags.Ephemeral });
+    const att = i.options.getAttachment("file");
+    const url = att?.url ?? i.options.getString("url")?.trim();
+    if (!url) return i.reply({ content: "要附檔案，或給一個直接下載的連結", flags: MessageFlags.Ephemeral });
+    if (att && att.size > MAX_UPLOAD_BYTES) return i.reply({ content: `檔案太大（上限 ${MAX_UPLOAD_BYTES / 1048576} MB）`, flags: MessageFlags.Ephemeral });
+    const filename = att?.name ?? decodeURIComponent(new URL(url).pathname.split("/").pop() || "audio");
+    const title = i.options.getString("title")?.trim() || filename.replace(/\.[^.]+$/, "");
+    const dateStr = i.options.getString("date");
+    const startedAt = dateStr ? parseWhen(dateStr) : null;
+    if (dateStr && !startedAt) return i.reply({ content: "看不懂這個日期，用 2026-10-14 或 10/14 14:30 這種寫法", flags: MessageFlags.Ephemeral });
+    const people = (i.options.getString("people") ?? "").split(/[、,，\s]+/).map((x) => x.trim()).filter(Boolean);
+    if (!i.deferred && !i.replied) await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const card = await startImport(p, i.channelId, i.user.id, { url, filename, title, startedAt: startedAt ?? undefined, people });
+    await i.editReply((card.url ? `狀態卡：${card.url}` : "貼不進這個頻道，改私訊你。") + permWarning(i));
     return;
   }
   if (sub === "status") {
     const a = meeting.getActive(p.id);
-    return i.reply({ content: a ? `🔴 ${meeting.describe(a)}` : "沒有在錄", flags: MessageFlags.Ephemeral });
+    if (!a) return i.reply({ content: "沒有在錄", flags: MessageFlags.Ephemeral });
+    const c = cards.get(p.id);
+    const embed = c ? renderCard(c.state) : renderCard({ phase: "recording", label: a.label, project: p.name, startedAt: a.startedAt, note: a.state });
+    return i.reply({ embeds: [embed], content: c?.url ? `狀態卡：${c.url}` : undefined, flags: MessageFlags.Ephemeral });
   }
   if (sub === "stop") {
     const a = meeting.getActive(p.id);
     if (!a) return i.reply({ content: "沒有在錄", flags: MessageFlags.Ephemeral });
-    await i.deferReply();
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
     await a.stop();
-    return i.editReply(`⏹ 停止 ${a.label}。存檔結果會貼在 <#${a.reportChannelId}>。`);
+    const c = cards.get(p.id);
+    return i.editReply(`⏹ 已停止 ${a.label}。${c?.url ? `結果會更新在 ${c.url}` : `結果會貼在 <#${a.reportChannelId}>`}`);
   }
   if (sub === "voice") {
     const opt = i.options.getChannel("channel");
     const ch = opt ? i.guild.channels.cache.get(opt.id) : i.member.voice.channel;
     if (!ch || !ch.isVoiceBased()) return i.reply({ content: "你要先進語音頻道，或在指令裡指定一個語音頻道", flags: MessageFlags.Ephemeral });
-    await i.deferReply();
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
     const a = await meeting.startVoice(p.id, ch, i.channelId, i.user.id);
-    return i.editReply(`🔴 開始錄 ${a.label}，每人一軌。\`/meet stop\` 或所有人離開後自動停止，錄完會貼在這裡。` + permWarning(i));
+    await ackWithCard(i, p.id, { phase: "recording", label: a.label, project: p.name, invokerId: i.user.id, startedAt: a.startedAt, note: "每人一軌。" });
+    return;
   }
   if (sub === "google") {
-    const a = meeting.startMeet(p.id, i.options.getString("url", true).trim(), i.channelId, i.user.id);
-    return i.reply(
-      `🟡 正在加入 ${a.label}，名字是「${config.meetBotName}」。主持人放行後開始錄，\`/meet stop\` 停止。\n` +
-        `會議要求 Google 帳號登入的話訪客進不去，我會在這裡回報。` +
-        permWarning(i),
-    );
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const a = await meeting.startMeet(p.id, i.options.getString("url", true).trim(), i.channelId, i.user.id);
+    await ackWithCard(i, p.id, { phase: "joining", label: a.label, project: p.name, invokerId: i.user.id, note: `正在開會議頁面，會以「${config.meetBotName}」加入。` });
+    return;
   }
+}
+
+interface ImportReq {
+  url: string;
+  filename: string;
+  title: string;
+  startedAt?: Date;
+  people: string[];
+}
+
+/** 外部錄音：貼卡 → 下載 → 轉檔 → 轉逐字稿 → 會議紀錄。/meet upload 和「回覆音檔 @bot」共用 */
+async function startImport(p: store.Project, channelId: string, invokerId: string, r: ImportReq): Promise<MeetingCard> {
+  const label = `🎤${r.title}`;
+  const card = new MeetingCard(client, channelId, {
+    phase: "transcribing",
+    label,
+    project: p.name,
+    invokerId,
+    startedAt: (r.startedAt ?? new Date()).getTime(),
+    participants: r.people.join("、") || undefined,
+    note: "下載並轉檔中…",
+  });
+  await card.post();
+  void (async () => {
+    const tmp = path.join(config.recordingsDir, `.upload-${Date.now()}-${invokerId}`);
+    try {
+      fs.mkdirSync(config.recordingsDir, { recursive: true });
+      await download(r.url, tmp);
+      const { dir, manifest } = await importAudio(p.id, tmp, { title: r.title, startedAt: r.startedAt, people: r.people, filename: r.filename });
+      await card.update({ durationSec: manifest.durationSec, note: "正在轉逐字稿，好了會更新這張卡。" });
+      await transcribeAndRecord(p, dir, manifest, label, card);
+    } catch (e) {
+      fs.rmSync(tmp, { force: true });
+      await card.update({ phase: "failed", note: `匯入失敗：${(e as Error).message.slice(0, 300)}` });
+    }
+  })();
+  return card;
+}
+
+const AUDIO_EXT = /\.(m4a|mp3|wav|ogg|oga|opus|aac|flac|webm|mp4|m4b|wma|amr|3gp|aiff?)$/i;
+function isAudio(a: Attachment): boolean {
+  return !!a.contentType?.startsWith("audio/") || AUDIO_EXT.test(a.name);
+}
+
+function labelOf(m: Manifest): string {
+  if (m.platform === "discord") return `🔊${m.source.match(/#(.+?) \(/)?.[1] ?? "語音"}`;
+  if (m.platform === "upload") return `🎤${m.source}`;
+  return `Google Meet ${m.source.replace(/^https:\/\/meet\.google\.com\//, "")}`;
+}
+
+/**
+ * 回應 slash 指令的方式：卡貼成一般訊息（之後可以一直編輯，不受互動 15 分鐘限制），
+ * 互動本身只留一個短的隱藏回覆（缺權限的提醒也放這裡）。
+ */
+async function ackWithCard(i: ChatInputCommandInteraction, projectId: string, state: ConstructorParameters<typeof MeetingCard>[2]) {
+  if (!i.deferred && !i.replied) await i.deferReply({ flags: MessageFlags.Ephemeral });
+  const c = await newCard(projectId, i.channelId, state);
+  const warn = permWarning(i);
+  await i.editReply((c.url ? `狀態卡：${c.url}` : "貼不進這個頻道，改私訊你。") + warn);
 }
 
 async function cmdReview(i: ChatInputCommandInteraction) {
@@ -879,6 +1006,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
     console.log(`[discord] ${sig}${n ? `，先把 ${n} 場錄音存好` : ""}`);
     await meeting.stopAll();
     store.save();
+    await shutdownTraces();
     await client.destroy();
     process.exit(0);
   });

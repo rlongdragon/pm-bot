@@ -51,6 +51,12 @@ for (const want of ["# 會議記錄", "決定用 **FastAPI**", "- [ ] 登入頁"
 assert.equal(propText({ type: "status", status: { name: "進行中" } }), "進行中");
 assert.equal(propText({ type: "people", people: [{ name: "Alice" }] }), "Alice");
 assert.equal(propText({ type: "date", date: { start: "2026-10-21", end: null } }), "2026-10-21");
+// pages 模式：子頁面不展開，收進陣列
+const pages: import("../src/sources/notion.js").ChildPageRef[] = [];
+const md2 = await renderBlocks(blocks, async (id) => kids[id] ?? [], 0, { left: 3000 }, pages);
+assert.ok(md2.includes("📄 [子頁面](https://app.notion.com/p/9) → pages/9.md"), md2);
+assert.ok(!md2.includes("子頁內容"), "pages 模式不該展開子頁面");
+assert.deepEqual(pages.map((x) => [x.id, x.title]), [["9", "子頁面"]]);
 console.log("✓ Notion 轉 markdown");
 
 // GitHub 實打
@@ -67,6 +73,6 @@ assert.equal(again.changed, false, "第二次同步應該沒變（ETag 304）");
 assert.deepEqual(again.errors, []);
 console.log("✓ 第二次同步沒有變動（ETag 304）");
 await assert.rejects(addLink(p, `https://github.com/${repo}`), /已經連過/);
-await assert.rejects(addLink(p, "https://github.com/rlongdragon/this-repo-does-not-exist-xyz"), /找不到 repo/);
+await assert.rejects(addLink(p, "https://github.com/rlongdragon/this-repo-does-not-exist-xyz"), /[找看]不到 repo/); // 有設 GitHub App 時是「看不到…去授權」
 assert.equal(p.links?.length, 1, "失敗的不會加進去");
 console.log("✓ 重複、不存在的 repo 會被擋下");

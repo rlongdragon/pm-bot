@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { Link, SyncResult } from "./types.js";
 import { oneLine, writeIfChanged } from "./write.js";
@@ -93,9 +94,26 @@ export function rt(arr: RichText[] | undefined): string {
 export type FetchChildren = (blockId: string) => Promise<any[]>;
 
 const MAX_BLOCKS = 3000;
+/** 一個根頁面底下最多展開幾個子頁面 */
+const MAX_PAGES = 200;
 
-/** blocks 轉 markdown。fetchChildren 注入，方便測試 */
-export async function renderBlocks(blocks: any[], fetchChildren: FetchChildren, depth = 0, budget = { left: MAX_BLOCKS }): Promise<string> {
+/** 子頁面：由 renderBlocks 收集（pages 模式），syncNotion 再各自寫成一檔 */
+export interface ChildPageRef {
+  id: string;
+  title: string;
+  lastEdited?: string;
+  parent?: string;
+}
+
+export function pageUrl(id: string) {
+  return `https://app.notion.com/p/${id.replace(/-/g, "")}`;
+}
+
+/**
+ * blocks 轉 markdown。fetchChildren 注入，方便測試。
+ * 給 pages 陣列時子頁面不展開：留一行連結、把它收進 pages（呼叫端另外寫檔）；沒給就整頁展開（舊行為）。
+ */
+export async function renderBlocks(blocks: any[], fetchChildren: FetchChildren, depth = 0, budget = { left: MAX_BLOCKS }, pages?: ChildPageRef[]): Promise<string> {
   const out: string[] = [];
   const ind = "  ".repeat(depth);
   let n = 0;
@@ -149,8 +167,14 @@ export async function renderBlocks(blocks: any[], fetchChildren: FetchChildren, 
         line = `$${d.expression}$`;
         break;
       case "child_page":
-        line = `\n## 📄 ${d.title}`;
-        childDepth = depth;
+        if (pages) {
+          const cid = String(b.id).replace(/-/g, "");
+          pages.push({ id: cid, title: d.title || "（無標題）", lastEdited: b.last_edited_time });
+          line = `📄 [${d.title || "（無標題）"}](${pageUrl(cid)}) → pages/${cid}.md`;
+        } else {
+          line = `\n## 📄 ${d.title}`;
+          childDepth = depth;
+        }
         break;
       case "child_database":
         line = `📊 資料庫「${d.title}」（內容沒有展開，要看的話把它另外 /link）`;
@@ -183,9 +207,9 @@ export async function renderBlocks(blocks: any[], fetchChildren: FetchChildren, 
         break; // unsupported、breadcrumb、table_of_contents 等略過
     }
     if (line !== null) out.push(line.split("\n").map((l) => (l ? ind + l : l)).join("\n"));
-    if (b.has_children && t !== "child_database") {
+    if (b.has_children && t !== "child_database" && !(pages && t === "child_page")) {
       const kids = await fetchChildren(b.id);
-      let sub = await renderBlocks(kids, fetchChildren, t === "child_page" ? 0 : childDepth, budget);
+      let sub = await renderBlocks(kids, fetchChildren, t === "child_page" ? 0 : childDepth, budget, pages);
       if (t === "table") {
         const rows = sub.split("\n");
         if (rows.length) rows.splice(1, 0, "|" + " --- |".repeat((rows[0].match(/\|/g)?.length ?? 2) - 1));
@@ -337,10 +361,60 @@ export async function syncNotion(link: Link, dir: string, token: NotionCred | nu
 
   let md: string;
   let title: string;
+  const files = ["index.md"];
+  let changed = false;
   if (page) {
     title = titleOf(page.properties) || "（無標題）";
-    const body = await renderBlocks(await allChildren(token, id), (bid) => allChildren(token, bid));
-    md = `# ${title}\n\n來源：<${page.url}>\n\n${body}\n`;
+    const fetchKids = (bid: string) => allChildren(token, bid);
+    const rootKids: ChildPageRef[] = [];
+    const body = await renderBlocks(await allChildren(token, id), fetchKids, 0, { left: MAX_BLOCKS }, rootKids);
+
+    // 子頁面一頁一檔：pages/<id>.md。寬度優先，每頁自己的 block 預算；id 就是網址裡那 32 碼，agent 拿網址就找得到
+    const seen = new Map<string, ChildPageRef>();
+    const queue: ChildPageRef[] = rootKids.map((k) => ({ ...k, parent: undefined }));
+    const children = new Map<string | undefined, ChildPageRef[]>();
+    while (queue.length && seen.size < MAX_PAGES) {
+      const k = queue.shift()!;
+      if (seen.has(k.id) || k.id === link.target) continue;
+      seen.set(k.id, k);
+      (children.get(k.parent) ?? children.set(k.parent, []).get(k.parent)!).push(k);
+      const kids: ChildPageRef[] = [];
+      let kbody: string;
+      try {
+        kbody = await renderBlocks(await allChildren(token, k.id), fetchKids, 0, { left: MAX_BLOCKS }, kids);
+      } catch (e) {
+        kbody = `（讀不到這頁：${(e as Error).message}）`;
+      }
+      queue.push(...kids.map((c) => ({ ...c, parent: k.id })));
+      const crumbs: string[] = [];
+      for (let cur = k.parent; cur; cur = seen.get(cur)?.parent) crumbs.unshift(seen.get(cur)!.title);
+      crumbs.unshift(title);
+      const kmd =
+        `# ${k.title}\n\n來源：<${pageUrl(k.id)}>\n上層：${crumbs.join(" › ")}\n` +
+        (k.lastEdited ? `最後編輯：${k.lastEdited.slice(0, 10)}\n` : "") +
+        `\n${kbody}\n`;
+      if (writeIfChanged(path.join(dir, "pages", `${k.id}.md`), kmd)) changed = true;
+      files.push(`pages/${k.id}.md`);
+    }
+    const tree = (parent: string | undefined, depth: number): string[] =>
+      (children.get(parent) ?? []).flatMap((k) => [
+        `${"  ".repeat(depth)}- 📄 [${k.title}](${pageUrl(k.id)})${k.lastEdited ? ` 編輯 ${k.lastEdited.slice(0, 10)}` : ""} → pages/${k.id}.md`,
+        ...tree(k.id, depth + 1),
+      ]);
+    const index = tree(undefined, 0);
+    md =
+      `# ${title}\n\n來源：<${page.url}>\n` +
+      (page.last_edited_time ? `最後編輯：${String(page.last_edited_time).slice(0, 10)}\n` : "") +
+      `\n${body}\n` +
+      (index.length ? `\n## 子頁面一覽（${seen.size} 頁${queue.length ? `，超過 ${MAX_PAGES} 頁的沒抓` : ""}）\n\n${index.join("\n")}\n` : "");
+    // 已經不在樹上的子頁面檔案刪掉（頁面被移走、刪除）
+    const pagesDir = path.join(dir, "pages");
+    if (fs.existsSync(pagesDir))
+      for (const f of fs.readdirSync(pagesDir))
+        if (!files.includes(`pages/${f}`)) {
+          fs.rmSync(path.join(pagesDir, f), { force: true });
+          changed = true;
+        }
   } else {
     let db: any;
     try {
@@ -369,6 +443,6 @@ export async function syncNotion(link: Link, dir: string, token: NotionCred | nu
     ].join("\n");
     md = `# ${title}（資料庫，${rows.length} 筆${rows.length >= 500 ? "，只取前 500" : ""}）\n\n來源：<${db.url}>\n\n${table}\n`;
   }
-  const changed = writeIfChanged(path.join(dir, "index.md"), md);
-  return { changed, title, files: ["index.md"] };
+  if (writeIfChanged(path.join(dir, "index.md"), md)) changed = true;
+  return { changed, title, files };
 }

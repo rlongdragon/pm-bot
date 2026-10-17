@@ -39,6 +39,9 @@ const ARGS = [
   "--lang=zh-TW",
   // 登入用的 profile（scripts/meet-login.ts）也用 basic，cookie 才解得開
   "--password-store=basic",
+  // 畫面上少些干擾：翻譯列、上次沒正常關閉的還原泡泡
+  "--disable-features=Translate,TranslateUI",
+  "--hide-crash-restore-bubble",
 ];
 
 const session = new RecordingSession(project, "meet", url, url.replace(/^https:\/\/meet\.google\.com\//, "").split("?")[0]);
@@ -143,6 +146,7 @@ async function main() {
   emit("status", { message: "已進入會議，開始錄音", recording: true });
 
   let aloneSince: number | null = null;
+  let lastDebug = 0;
   while (!stopping) {
     await page.waitForTimeout(5000);
     if (await callEnded()) {
@@ -150,6 +154,14 @@ async function main() {
       break;
     }
     const n = await participantCount();
+    if (Date.now() - lastDebug > 60_000) {
+      // 每分鐘記一次人數判斷的依據，Meet 改版時才查得到為什麼沒自動離開
+      lastDebug = Date.now();
+      const labels = await page
+        .evaluate(`[...document.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label')).filter(l => /\\d/.test(l) && /人|people|participant|與會|everyone/i.test(l)).slice(0, 6)`)
+        .catch(() => []);
+      console.error(`[meet] participants=${n} alone=${aloneSince ? Math.round((Date.now() - aloneSince) / 1000) + "s" : "no"} labels=${JSON.stringify(labels)}`);
+    }
     if (n !== null) {
       if (n <= 1) {
         aloneSince ??= Date.now();
@@ -203,9 +215,15 @@ async function callEnded() {
 }
 
 async function participantCount(): Promise<number | null> {
+  // 新版 Meet 不一定把人數放在 aria-label；只剩自己時畫面會寫「你是唯一的與會者」，也當 1 個人
+  const body = (await page.locator("body").innerText().catch(() => "")).slice(0, 6000);
+  if (/你是唯一|只有你一個|You're the only one|You are the only one/i.test(body)) return 1;
   return page
     .evaluate(
       `(() => {
+    // 每個與會者的畫面格都有 data-participant-id，數不重複的 id 最準
+    const ids = new Set([...document.querySelectorAll('[data-participant-id]')].map(e => e.getAttribute('data-participant-id')).filter(Boolean));
+    if (ids.size) return ids.size;
     const els = document.querySelectorAll('button, [role="button"], div[aria-label]');
     for (const el of els) {
       const label = (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');

@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { config } from "../config.js";
 
-export type Platform = "discord" | "meet";
+export type Platform = "discord" | "meet" | "upload";
 
 export interface Participant {
   id: string;

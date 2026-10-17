@@ -16,6 +16,8 @@ raw/YYYY-MM-DD.md   頻道原始訊息。唯讀。
 files/              成員丟進頻道的附件。唯讀。
 pending.md          上次整理後的新訊息。唯讀。
 sources/            GitHub、Notion 的副本（bot 同步）。唯讀。
+                    Notion：notion/<根頁面id>/index.md 是授權的根頁面（最後有「子頁面一覽」），
+                    每個子頁面一檔在 notion/<根頁面id>/pages/<頁面id>.md；id 就是 Notion 網址裡那 32 碼。
 ```
 
 ## STATE.md 格式
@@ -69,7 +71,7 @@ sources/            GitHub、Notion 的副本（bot 同步）。唯讀。
 
 ## 回答規則
 
-- 先看 STATE.md。不夠再 grep raw/、notes/、sources/。問到 GitHub、Notion 的內容直接看 sources/。
+- 先看 STATE.md。不夠再 grep raw/、notes/、sources/。問到 GitHub、Notion 的內容直接看 sources/。拿到 Notion 網址就用網址裡的 32 碼 id 找 sources/notion/*/pages/<id>.md，找不到再 grep 標題。
 - 只回應這次被問的事，不要主動提舊訊息或之前的問題。
 - 回覆要短：直接講結果或答案，不要附「原因」「建議」「另外」段落。
 - 引用附 raw id。

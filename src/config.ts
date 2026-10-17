@@ -96,6 +96,10 @@ export const config = {
   transcribeAuto: process.env.TRANSCRIBE_AUTO !== "0",
   /** 同一個來源多久內不重抓（分鐘） */
   sourceMinIntervalMin: Number(process.env.SOURCE_MIN_INTERVAL_MIN ?? 10),
+  /** Langfuse 監控。兩把 key 都有才送 */
+  langfuseBaseUrl: (process.env.LANGFUSE_BASE_URL || "https://cloud.langfuse.com").replace(/\/$/, ""),
+  langfusePublicKey: process.env.LANGFUSE_PUBLIC_KEY || undefined,
+  langfuseSecretKey: process.env.LANGFUSE_SECRET_KEY || undefined,
 };
 
 export function isAllowed(userId: string) {

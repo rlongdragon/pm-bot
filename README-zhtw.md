@@ -50,7 +50,7 @@ Discord Developer Portal → Bot：打開 **Message Content Intent**（只能在
 | `/review` | 立刻巡檢 | admin |
 | `/link add <url>` / `list` / `remove <id>` / `sync` / `github` / `notion` | 連 GitHub repo、Notion 頁面或資料庫（唯讀）；`github` 給 GitHub App 授權頁面；`notion` 開 Notion 授權頁，勾的頁面自動連上 | admin（list、github 全部） |
 | `/board set <Notion 頁面>` / `sync` / `off` | 在 Notion 建看板，STATE.md 有變就自動更新 | admin |
-| `/meet voice [channel]` / `google <url>` / `stop` / `status` | 錄 Discord 語音或 Google Meet | ALLOWED_USER_IDS |
+| `/meet voice [channel]` / `google <url>` / `upload <file\|url>` / `stop` / `status` | 錄 Discord 語音或 Google Meet | ALLOWED_USER_IDS |
 
 每天 `REVIEW_HOUR` 點自動巡檢：期限 2 天內、超過 7 天沒更新的任務在主頻道提醒負責人；之前處理失敗的記錄也會補整理。
 
@@ -109,11 +109,16 @@ knowledge/
 從 meeting-recorder 併進來的。音檔不進筆記 git，放 `data/recordings/<專案ID>/<時間>_<平台>_<名稱>/`（`manifest.json` 有參與者與時間軸）。錄完 bot 在下指令的頻道回報，並在專案記一筆 raw。**還不會轉文字稿**，有逐字稿用 `/note` 上傳。
 
 - **Discord 語音**：`/meet voice`，錄你所在的語音頻道，每人一軌再混成 `mixed.ogg`。所有人離開自動停。bot 要有該頻道的「連線」權限。
+- **外部錄音**：把錄音檔丟到頻道，回覆它並 @bot 說「轉逐字稿」（可以順便寫標題、日期、與會者，例如「10/13 的小組會議，與會者 Alice、Bob，幫我轉逐字稿」）；或 `/meet upload file:<錄音檔>`（或 `url:` 直接下載連結，上限 500 MB），可加 `title`、`date`、`people`。bot 轉成 `mixed.ogg` 後走同一條轉錄與整理流程，原檔留在 `tracks/`。
 - **Google Meet**：`/meet google <url>`，Chromium 在 Xvfb 虛擬螢幕上有畫面地跑（無頭模式會被 Meet 當自動程式擋），另開子程序，掛了不影響 bot。
   - **bot 要有自己的 Google 帳號**：Google 會自動拒絕沒登入的訪客 bot（主持人收不到要求），機房 IP 連 Open 會議也進不去。在伺服器跑 `npm run meet:login`，它印出一個網址（`<PUBLIC_BASE_URL>/login/<一次性代碼>`，由 bot 的 HTTP 轉給腳本），打開就是遠端的 Chromium 畫面，用 bot 的帳號登入（Ctrl+V 可以貼密碼）。登入完自動關閉，profile 存在 `data/meet-profile/`，之後 `/meet google` 自動用。要換帳號就刪掉那個資料夾再跑一次。
   - 會議維持預設的 Trusted：把 bot 帳號加進日曆邀請就直接進；臨時會議它會敲門，主持人按允許。
 - 需要系統 `ffmpeg`、`npx playwright install chromium`。
 - bot 停止或重啟時會先把錄音收尾存檔（pm2 `kill_timeout` 60 秒）。
+
+## 監控
+
+設 `LANGFUSE_BASE_URL`、`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY` 就會把每次 agent 回合送到 Langfuse：一回合一條 trace（名稱 = mention / ask / review…，tag 是專案 ID 和模式，userId 是觸發的 Discord 使用者，sessionId 是 Claude 的 session），裡面每次 Claude 回覆一個 generation（input / output / cache token），每個工具呼叫一個 span（輸入、輸出、有沒有被擋）。轉逐字稿也是一條 trace，每次打模型一個 generation。不設就完全不送。
 
 ## 之後
 

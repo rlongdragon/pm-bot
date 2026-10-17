@@ -6,6 +6,7 @@ import { query, type Options, type SDKMessage } from "@anthropic-ai/claude-agent
 import { config } from "./config.js";
 import { allowRules, guardHook, TOOLS, type Mode } from "./sandbox.js";
 import { projectDir } from "./store.js";
+import { child, clip, flushTraces, setTraceAttrs, startTrace, type Obs } from "./trace.js";
 
 const exec = promisify(execFile);
 
@@ -39,6 +40,8 @@ export interface RunOpts {
   mode: Mode;
   label: string;
   resume?: string;
+  /** 只給監控用：誰觸發、在哪個頻道 */
+  trace?: { userId?: string; channel?: string };
 }
 
 /** 組 SDK options。抽出來是為了讓測試能單獨驗證每一層 */
@@ -82,9 +85,68 @@ export async function runAgent(prompt: string, o: RunOpts, override?: (opts: Opt
   let error: string | undefined;
 
   const options = override ? override(buildOptions(o)) : buildOptions(o);
+
+  // 監控：一回合一條 trace；每個 assistant 訊息一個 generation、每個工具呼叫一個 span（結果回來時收掉）
+  const trace = startTrace(o.label.split(":")[0], {
+    userId: o.trace?.userId,
+    sessionId: o.resume,
+    input: clip(prompt),
+    tags: [o.project, o.mode],
+    metadata: { project: o.project, mode: o.mode, label: o.label, model: config.model, channel: o.trace?.channel, resume: !!o.resume },
+  });
+  const openSpans = new Map<string, Obs>();
+  let turnInput: unknown = clip(prompt, 20_000);
+  let last = new Date();
+
   for await (const m of query({ prompt, options }) as AsyncIterable<SDKMessage>) {
-    if (m.type === "assistant") {
+    const now = new Date();
+    if (m.type === "system" && m.subtype === "init") {
       sessionId = m.session_id;
+      if (trace) {
+        trace.attrs.sessionId = sessionId;
+        setTraceAttrs(trace.root, trace.attrs);
+      }
+    } else if (m.type === "assistant") {
+      sessionId = m.session_id;
+      if (trace) {
+        const msg: any = m.message;
+        const blocks: any[] = Array.isArray(msg?.content) ? msg.content : [];
+        const texts = blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+        const tools = blocks.filter((b) => b.type === "tool_use");
+        const u = msg?.usage ?? {};
+        const gen = child(trace, "claude", "generation", {
+          model: msg?.model ?? config.model,
+          input: turnInput,
+          output: tools.length ? { text: texts, tool_calls: tools.map((t) => ({ id: t.id, name: t.name, input: clip(t.input, 4000) })) } : texts,
+          usageDetails: {
+            input: u.input_tokens ?? 0,
+            output: u.output_tokens ?? 0,
+            cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
+            cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+          },
+          metadata: { stop_reason: msg?.stop_reason },
+        }, last);
+        gen.end(now);
+        for (const t of tools) openSpans.set(t.id, child(trace, t.name, "tool", { input: clip(t.input, 20_000) }, now));
+        turnInput = [];
+        last = now;
+      }
+    } else if (m.type === "user") {
+      if (trace) {
+        const content: any = (m as any).message?.content;
+        const results: any[] = Array.isArray(content) ? content.filter((b) => b.type === "tool_result") : [];
+        for (const r of results) {
+          const out = typeof r.content === "string" ? r.content : Array.isArray(r.content) ? r.content.map((c: any) => c.text ?? "").join("\n") : "";
+          const sp = openSpans.get(r.tool_use_id);
+          if (sp) {
+            (sp as any).update({ output: clip(out, 20_000), ...(r.is_error ? { level: "ERROR", statusMessage: clip(out, 300) } : {}) });
+            sp.end(now);
+          }
+          openSpans.delete(r.tool_use_id);
+          (turnInput as any[]).push({ tool_use_id: r.tool_use_id, is_error: !!r.is_error, result: clip(out, 4000) });
+        }
+        if (results.length) last = now;
+      }
     } else if (m.type === "result") {
       sessionId = m.session_id;
       costUsd = m.total_cost_usd;
@@ -92,7 +154,26 @@ export async function runAgent(prompt: string, o: RunOpts, override?: (opts: Opt
       denials = m.permission_denials?.length ?? 0;
       if (m.subtype === "success") text = m.result;
       else error = `${m.subtype}: ${m.errors?.join("; ")}`;
+      if (trace) {
+        (trace.root as any).update({
+          output: error ? `❌ ${error}` : clip(text),
+          ...(error ? { level: "ERROR", statusMessage: error } : {}),
+          metadata: { project: o.project, mode: o.mode, label: o.label, model: config.model, channel: o.trace?.channel, costUsd, turns, denials, durationMs: m.duration_ms, durationApiMs: m.duration_api_ms, usage: m.usage },
+        });
+        if (error) {
+          trace.attrs.tags = [o.project, o.mode, "error"];
+          setTraceAttrs(trace.root, trace.attrs);
+        }
+      }
     }
+  }
+  for (const s of openSpans.values()) {
+    (s as any).update({ level: "WARNING", statusMessage: "沒有收到工具結果" });
+    s.end();
+  }
+  if (trace) {
+    trace.root.end();
+    void flushTraces();
   }
   console.log(
     `[agent] ${o.label} turns=${turns} cost=$${costUsd.toFixed(3)} denials=${denials} session=${sessionId}${error ? " ERR " + error : ""}`,
