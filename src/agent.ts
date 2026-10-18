@@ -97,9 +97,31 @@ export async function runAgent(prompt: string, o: RunOpts, override?: (opts: Opt
   const openSpans = new Map<string, Obs>();
   let turnInput: unknown = clip(prompt, 20_000);
   let last = new Date();
+  // SDK 會把同一次 API 回覆拆成多個 assistant 訊息（每個 content block 一個，usage 相同），
+  // 用 message.id 併成一個 generation，下一個不同訊息或回合結束時才收掉
+  let cur: { id?: string; gen: Obs; msg: any; texts: string[]; tools: any[]; end: Date } | null = null;
+  const closeGen = () => {
+    if (!cur) return;
+    const { gen, msg, texts, tools, end } = cur;
+    const u = msg?.usage ?? {};
+    const text = texts.join("\n");
+    (gen as any).update({
+      output: tools.length ? { text, tool_calls: tools.map((t) => ({ id: t.id, name: t.name, input: clip(t.input, 4000) })) } : text,
+      usageDetails: {
+        input: u.input_tokens ?? 0,
+        output: u.output_tokens ?? 0,
+        cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
+        cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+      },
+      metadata: { stop_reason: msg?.stop_reason },
+    });
+    gen.end(end);
+    cur = null;
+  };
 
   for await (const m of query({ prompt, options }) as AsyncIterable<SDKMessage>) {
     const now = new Date();
+    if (m.type !== "assistant") closeGen();
     if (m.type === "system" && m.subtype === "init") {
       sessionId = m.session_id;
       if (trace) {
@@ -111,24 +133,21 @@ export async function runAgent(prompt: string, o: RunOpts, override?: (opts: Opt
       if (trace) {
         const msg: any = m.message;
         const blocks: any[] = Array.isArray(msg?.content) ? msg.content : [];
-        const texts = blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+        const texts: string[] = blocks.filter((b) => b.type === "text").map((b) => b.text);
         const tools = blocks.filter((b) => b.type === "tool_use");
-        const u = msg?.usage ?? {};
-        const gen = child(trace, "claude", "generation", {
-          model: msg?.model ?? config.model,
-          input: turnInput,
-          output: tools.length ? { text: texts, tool_calls: tools.map((t) => ({ id: t.id, name: t.name, input: clip(t.input, 4000) })) } : texts,
-          usageDetails: {
-            input: u.input_tokens ?? 0,
-            output: u.output_tokens ?? 0,
-            cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
-            cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
-          },
-          metadata: { stop_reason: msg?.stop_reason },
-        }, last);
-        gen.end(now);
+        if (cur && msg?.id && cur.id === msg.id) {
+          cur.texts.push(...texts);
+          cur.tools.push(...tools);
+          cur.msg = msg;
+          cur.end = now;
+        } else {
+          closeGen();
+          // 從上一個事件（prompt 送出或工具結果回來）算起，才是這次模型呼叫的時間
+          const gen = child(trace, "claude", "generation", { model: msg?.model ?? config.model, input: turnInput }, last);
+          cur = { id: msg?.id, gen, msg, texts, tools: [...tools], end: now };
+          turnInput = [];
+        }
         for (const t of tools) openSpans.set(t.id, child(trace, t.name, "tool", { input: clip(t.input, 20_000) }, now));
-        turnInput = [];
         last = now;
       }
     } else if (m.type === "user") {
@@ -167,6 +186,7 @@ export async function runAgent(prompt: string, o: RunOpts, override?: (opts: Opt
       }
     }
   }
+  closeGen();
   for (const s of openSpans.values()) {
     (s as any).update({ level: "WARNING", statusMessage: "沒有收到工具結果" });
     s.end();

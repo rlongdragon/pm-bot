@@ -70,7 +70,12 @@ export function child(
   attrs: Record<string, unknown>,
   startTime?: Date,
 ): Obs {
-  const o = (t.root as any).startObservation(name, attrs, { asType, startTime }) as Obs;
+  // observation.startObservation() 會丟掉 startTime，所以用頂層的版本自己掛 parent
+  const o = (startObservation as any)(name, attrs, {
+    asType,
+    startTime,
+    parentSpanContext: t.root.otelSpan.spanContext(),
+  }) as Obs;
   setTraceAttrs(o, t.attrs);
   return o;
 }
