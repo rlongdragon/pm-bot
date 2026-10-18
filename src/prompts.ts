@@ -12,7 +12,7 @@ ${block}
 - 在問東西（有問號、問進度、問誰負責、問之前講過什麼）就只回答，**不要改任何檔案**。先看 STATE.md，不夠再 grep raw/、notes/、sources/，回答附 raw id。
 - 真的看不出來是哪一種才問「要幫你記錄嗎？」，不要常問。
 
-附件在 files/。專案連結的 GitHub（PR、issue、commit）和 Notion 內容在 sources/，問到這些先看 sources/。需要提醒別人或向人確認的寫 outbox.md。
+附件在 files/；Office 檔（pptx、docx、xlsx）旁邊有抽好的文字版 files/<檔名>.md，直接讀那份。專案連結的 GitHub（PR、issue、commit）和 Notion 內容在 sources/，問到這些先看 sources/。需要提醒別人或向人確認的寫 outbox.md。
 
 回覆規則：
 - 只處理這一則。不要提起其他舊訊息、之前的問題或別的頻道。

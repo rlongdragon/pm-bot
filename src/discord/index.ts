@@ -26,6 +26,7 @@ import { appConfigured, installUrl } from "../sources/github-app.js";
 import { setOauthHint, sharedRoots } from "../sources/notion.js";
 import { authOf, authorizeUrl, claimPages, credFor, finishAuth, oauthConfigured, type AuthContext } from "../sources/notion-oauth.js";
 import { startHttp } from "../http.js";
+import { OFFICE_EXT, officeToMarkdown } from "../extract.js";
 import { createBoard, pushBoard } from "../board.js";
 import * as meeting from "../meeting/index.js";
 import { fmtDuration, sanitize, type Manifest } from "../meeting/session.js";
@@ -94,6 +95,7 @@ client.once("clientReady", () => {
   console.log(
     `[discord] logged in as ${client.user?.tag}, content-intent=${hasContentIntent ? "on" : "OFF"}, allowed=${config.allowedUserIds.join(",") || "ALL"}, model=${config.model ?? "default"}, knowledge=${config.knowledgeDir}, claude=${config.claudeConfigDir}`,
   );
+  backfillOfficeText();
   if (config.reviewHour >= 0) {
     setInterval(() => void reviewDue(), 10 * 60_000);
     console.log(`[review] daily at ${config.reviewHour}:00`);
@@ -118,6 +120,32 @@ function stamp() {
 const TEXT_EXT = /\.(md|txt|csv|json|log|srt|vtt|yaml|yml|html?)$/i;
 const MAX_ATTACH = 8 * 1024 * 1024;
 
+/** 舊版存下來、還沒有文字版的 Office 附件，啟動時補做 */
+function backfillOfficeText() {
+  for (const p of store.projects()) {
+    const dir = store.filesDir(p.id);
+    for (const f of fs.readdirSync(dir)) {
+      if (OFFICE_EXT.test(f) && !fs.existsSync(path.join(dir, `${f}.md`))) {
+        const r = officeText(p.id, f, fs.readFileSync(path.join(dir, f)));
+        console.log(`[attach] ${p.id} 補文字版 ${f}${r}`);
+      }
+    }
+  }
+}
+
+/** Office 檔另存一份抽出的文字（files/<檔名>.md），回傳附在附件後的說明 */
+function officeText(project: string, fname: string, buf: Buffer): string {
+  try {
+    const md = officeToMarkdown(fname, buf);
+    if (!md) return "（非文字）";
+    fs.writeFileSync(path.join(store.filesDir(project), `${fname}.md`), md);
+    return `（文字版：files/${fname}.md）`;
+  } catch (e) {
+    console.warn(`[attach] ${fname} 抽文字失敗：${(e as Error).message}`);
+    return "（非文字，抽文字失敗）";
+  }
+}
+
 async function saveAttachments(project: string, atts: Iterable<Attachment>): Promise<string[]> {
   const out: string[] = [];
   const hint = stamp();
@@ -130,7 +158,8 @@ async function saveAttachments(project: string, atts: Iterable<Attachment>): Pro
       const buf = Buffer.from(await (await fetch(a.url)).arrayBuffer());
       const fname = `${hint}_${a.name.replace(/[^\w.\-一-鿿]/g, "_")}`;
       fs.writeFileSync(path.join(store.filesDir(project), fname), buf);
-      out.push(`files/${fname}${TEXT_EXT.test(a.name) ? "" : "（非文字）"}`);
+      if (OFFICE_EXT.test(a.name)) out.push(`files/${fname}${officeText(project, fname, buf)}`);
+      else out.push(`files/${fname}${TEXT_EXT.test(a.name) ? "" : "（非文字）"}`);
     } catch {
       out.push(`${a.name}（下載失敗）<${a.url}>`);
     }
@@ -374,12 +403,23 @@ function quote(m: Message): string {
 }
 
 /** reply 某句話時：抓被回覆的訊息＋前後幾則。reply 的是 bot 自己的回答就只抓那一則 */
+/** 回覆 bot 時，往上沿回覆鏈找附件（bot 回答 → 當初 @bot 的訊息 → 它回覆的那則），最多 3 層 */
+async function chainAttachments(m: Message): Promise<Attachment[]> {
+  const out: Attachment[] = [];
+  let cur: Message | null = m;
+  for (let i = 0; i < 3 && cur?.reference?.messageId; i++) {
+    cur = await cur.fetchReference().catch(() => null);
+    if (cur) out.push(...cur.attachments.values());
+  }
+  return out;
+}
+
 async function gatherContext(msg: Message<true>): Promise<{ lines: string[]; atts: Attachment[] }> {
   if (!msg.reference?.messageId) return { lines: [], atts: [] };
   const ref = await msg.fetchReference().catch(() => null);
   if (!ref) return { lines: [], atts: [] };
   const atts = [...ref.attachments.values()];
-  if (ref.author.id === client.user?.id) return { lines: ["回覆 bot 先前的回答：", quote(ref)], atts };
+  if (ref.author.id === client.user?.id) return { lines: ["回覆 bot 先前的回答：", quote(ref)], atts: [...atts, ...(await chainAttachments(ref))] };
   if (!hasContentIntent) {
     return { lines: [`（bot 沒有 Message Content 權限，讀不到被回覆的訊息內容和前後文。被回覆的是 ${displayName(ref)} 的訊息：${ref.url}）`], atts };
   }
