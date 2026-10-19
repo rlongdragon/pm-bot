@@ -12,7 +12,7 @@ ${block}
 - 在問東西（有問號、問進度、問誰負責、問之前講過什麼）就只回答，**不要改任何檔案**。先看 STATE.md，不夠再 grep raw/、notes/、sources/，回答附 raw id。
 - 真的看不出來是哪一種才問「要幫你記錄嗎？」，不要常問。
 
-附件在 files/；Office 檔（pptx、docx、xlsx）旁邊有抽好的文字版 files/<檔名>.md，直接讀那份。專案連結的 GitHub（PR、issue、commit）和 Notion 內容在 sources/，問到這些先看 sources/。需要提醒別人或向人確認的寫 outbox.md。
+附件在 files/；Office 檔（pptx、docx、xlsx）旁邊有抽好的文字版 files/<檔名>.md，直接讀那份。專案連結的 GitHub（PR、issue、commit）和 Notion 內容在 sources/，問到這些先看 sources/。要向對方確認的直接寫在回覆裡問，不要寫 outbox.md（對方看得到你的回覆）。
 
 回覆規則：
 - 只處理這一則。不要提起其他舊訊息、之前的問題或別的頻道。
@@ -34,13 +34,14 @@ export function notePrompt(p: Project, rawId: string, block: string): string {
   return `${head(p)}這則被明確標為「要記錄」（會議結論、文字稿、研究成果等），已存成 raw ${rawId}：
 
 ${block}
-依規則更新筆記；研究成果、文字稿的重點整理寫進 notes/<主題>.md。附件在 files/。需要確認的寫 outbox.md。三行內回報改了什麼。`;
+依規則更新筆記；研究成果、文字稿的重點整理寫進 notes/<主題>.md。附件在 files/。需要確認的合併成一則寫 outbox.md，最多 3 個問題、不 @ 人；能自己標「待確認」的就不要問。三行內回報改了什麼。`;
 }
 
 export function reviewPrompt(p: Project, pending: string[]): string {
   return `${head(p)}每日巡檢。
 ${pending.length ? `\n1. pending.md 裡有 ${pending.length} 筆之前沒處理成功的記錄（${pending.join("、")}），依規則整理進筆記。` : ""}
-${pending.length ? "2" : "1"}. 看 STATE.md 的進行中任務：期限在 2 天內的，以及超過 7 天沒更新的，寫進 outbox.md 提醒負責人。
+${pending.length ? "2" : "1"}. 看 STATE.md 的進行中任務，只挑三種：有確定日期且 2 天內到期、已逾期、超過 7 天沒更新。期限「待確認」「未定」或沒有確定日期的不算；行尾「提醒 <日期>」在 3 天內的也跳過。
+   有的話合併成**一則**寫進 outbox.md（列點；只 @ 今天到期或逾期的負責人），並在那些任務行尾加「— 提醒 ${today()}」。
 沒有要做的就什麼都不改，回「無事」。三行內回報。`;
 }
 
@@ -51,7 +52,7 @@ ${block}
 逐字稿全文在 \`${transcriptRel}\`。與會者的 Discord id：${idMap || "（沒有）"}。
 會議錄音本身就是記錄要求，請：
 1. 讀完逐字稿，寫會議紀錄到 \`${notesRel}\`：與會者、摘要（5 行內）、決定、待辦（誰、做什麼、期限）、未決問題。每條附逐字稿時間戳，例如 [00:12:34]。
-2. 依規則更新 STATE.md、decisions.md、people.md。有明確負責人的待辦開成進行中任務，來源寫 raw ${rawId}；負責人或期限不明確的標「未定」，並在 outbox.md 問。
+2. 依規則更新 STATE.md、decisions.md、people.md。有明確負責人的待辦開成進行中任務，來源寫 raw ${rawId}；負責人或期限不明確的標「未定」或「待確認」；真的需要問的合併成一則寫 outbox.md，最多 3 個問題、不 @ 人。
 3. 閒聊和玩笑不要記。逐字稿是自動轉的，可能有錯字，人名或專有名詞看起來怪的照原樣留，不要自己改。
 4. 回覆三到五行：這場會的重點，以及你開了哪些任務。`;
 }
