@@ -35,6 +35,7 @@ import { fmtDuration, sanitize, type Manifest } from "../meeting/session.js";
 import { transcribe, transcribeEnabled } from "../meeting/transcribe.js";
 import type { Mode } from "../sandbox.js";
 import { MeetingCard, renderCard } from "./meeting-card.js";
+import { firedEmbed, listEmbeds, mentionsIn, removedEmbed, scheduleEmbed } from "./schedule-embed.js";
 import { download, importAudio, parseImportText, parseWhen, MAX_UPLOAD_BYTES } from "../meeting/import.js";
 
 if (!config.discordToken) {
@@ -234,20 +235,20 @@ async function say(
   content: string,
   fallbackUserId?: string,
   files?: { attachment: string; name: string }[],
-  opts: { ping?: boolean } = {},
+  opts: { ping?: boolean; embeds?: import("discord.js").EmbedBuilder[] } = {},
 ): Promise<boolean> {
   // ping 只 @ 個人和身分組，不讓 @everyone / @here 生效
   const allowedMentions = opts.ping ? { parse: ["users" as const, "roles" as const] } : { users: [] as string[] };
   const ch = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
   if (ch && ch.isTextBased() && "send" in ch) {
-    const ok = await ch.send({ content, files, allowedMentions }).then(() => true, (e) => (console.warn(`[say] ${channelId}: ${e.message}`), false));
+    const ok = await ch.send({ content: content || undefined, files, embeds: opts.embeds, allowedMentions }).then(() => true, (e) => (console.warn(`[say] ${channelId}: ${e.message}`), false));
     if (ok) return true;
   }
   if (fallbackUserId) {
     const u = await client.users.fetch(fallbackUserId).catch(() => null);
     const prefix = channelId ? `（我在 <#${channelId}> 沒有發言權限，改私訊你）\n` : "";
     const ok = await u
-      ?.send({ content: (prefix + content).slice(0, 2000), files })
+      ?.send({ content: (prefix + content).slice(0, 2000) || undefined, files, embeds: opts.embeds })
       .then(() => true, (e) => (console.warn(`[say] DM ${fallbackUserId}: ${e.message}`), false));
     if (ok) return true;
   }
@@ -550,20 +551,25 @@ function runSchedules() {
 /** 觸發一個排程。manual = /schedule run，不算遲到 */
 async function fireSchedule(p: store.Project, s: schedule.Schedule, manual = false): Promise<boolean> {
   const lateMin = manual ? 0 : Math.round((Date.now() - Date.parse(s.nextAt)) / 60_000);
-  const late = lateMin > 5 ? `\n-# 原定 ${schedule.fmtTime(s.nextAt)}，bot 當時沒在跑，晚了 ${lateMin} 分鐘` : "";
-  const tag = manual ? "（手動觸發）" : "";
   try {
     if (s.kind === "remind") {
-      const ok = await say(s.channelId, `⏰ ${s.text}${tag}${late}`.slice(0, 2000), s.createdBy, undefined, { ping: true });
+      // embed 裡的 @ 不會通知，要 ping 的人放 content
+      const ok = await say(s.channelId, mentionsIn(s.text), s.createdBy, undefined, { ping: true, embeds: [firedEmbed(s, s.text, { manual, lateMin })] });
       schedule.setError(p, s.id, ok ? undefined : "貼不出去");
       console.log(`[schedule] ${p.id}/${s.id} remind ${ok ? "sent" : "FAILED"}`);
       return ok;
     }
     const r = await runAndCommit(p, "ask", scheduledPrompt(p, s.text, s.createdBy), `schedule-${s.id}`, { trace: { userId: s.createdBy, channel: s.channelId } });
-    const head = `🤖 **定時任務** \`${s.id}\`${tag}：${s.text.replace(/\n/g, " ").slice(0, 80)}${late}`;
     const body = r.error ? `出錯：\`${r.error}\`` : r.text || "（沒有結果）";
-    let ok = true;
-    for (const c of splitDiscord(`${head}\n\n${body}`)) ok = (await say(s.channelId, c, s.createdBy, undefined, { ping: true })) && ok;
+    // 結果超過一張 embed（4000 字）就拆成多張，一則訊息最多 10 張
+    const parts = splitDiscord(body, 4000).slice(0, 10);
+    const embeds = parts.map((b, k) => {
+      const e = firedEmbed(s, b, { manual, lateMin, error: !!r.error });
+      if (k > 0) e.setTitle(null);
+      if (k < parts.length - 1) e.setFooter(null).setTimestamp(null);
+      return e;
+    });
+    const ok = await say(s.channelId, mentionsIn(body), s.createdBy, undefined, { ping: true, embeds });
     schedule.setError(p, s.id, r.error ?? (ok ? undefined : "貼不出去"));
     console.log(`[schedule] ${p.id}/${s.id} agent ${r.error ? "ERR " + r.error : "done"}`);
     return !r.error && ok;
@@ -588,13 +594,19 @@ async function onAutocomplete(i: AutocompleteInteraction) {
     if (!p) return i.respond([]);
     const sub = i.options.getSubcommand();
     const ql = q.toLowerCase();
+    // 選項名稱不會渲染 <@id>，自己換成名字（只查快取，autocomplete 只有 3 秒）
+    const names = (t: string) =>
+      t
+        .replace(/<@!?(\d+)>/g, (_, id) => "@" + (i.guild?.members.cache.get(id)?.displayName ?? i.client.users.cache.get(id)?.username ?? "成員"))
+        .replace(/<@&(\d+)>/g, (_, id) => "@" + (i.guild?.roles.cache.get(id)?.name ?? "身分組"))
+        .replace(/<#(\d+)>/g, (_, id) => "#" + ((i.guild?.channels.cache.get(id) as { name?: string } | undefined)?.name ?? "頻道"));
     const opts = schedule
       .list(p)
       .filter((s) => (sub === "pause" ? !s.paused : sub === "resume" ? !!s.paused : true))
-      .filter((s) => !ql || s.id.includes(ql) || s.text.toLowerCase().includes(ql) || s.when.includes(q))
+      .filter((s) => !ql || s.id.includes(ql) || names(s.text).toLowerCase().includes(ql) || s.when.includes(q))
       .slice(0, 25)
       .map((s) => ({
-        name: cut(`${s.kind === "remind" ? "⏰" : "🤖"} ${s.id} · ${s.paused ? "⏸️ 暫停" : schedule.fmtShort(s.nextAt)}${s.cron ? ` · ${s.when}` : ""} · ${s.text.replace(/\s+/g, " ")}`),
+        name: cut(`${s.kind === "remind" ? "⏰" : "🤖"} ${s.id} · ${s.paused ? "⏸️ 暫停" : schedule.fmtShort(s.nextAt)}${s.cron ? ` · ${s.when}` : ""} · ${names(s.text).replace(/\s+/g, " ")}`),
         value: s.id,
       }));
     return i.respond(opts);
@@ -629,10 +641,7 @@ async function cmdSchedule(i: ChatInputCommandInteraction) {
   if (sub === "list") {
     const l = schedule.list(p);
     if (!l.length) return i.reply({ content: "這個專案沒有排程。`/schedule add` 新增，或 @我 說「每週一 9 點整理週報」。", flags: MessageFlags.Ephemeral });
-    const chunks = splitDiscord(`**${p.name}** 的排程（${l.length}）\n` + l.map((s) => `${schedule.describe(s)}　→ <#${s.channelId}>`).join("\n"));
-    await i.reply({ content: chunks[0], ...quiet });
-    for (const c of chunks.slice(1)) await i.followUp({ content: c, ...quiet });
-    return;
+    return i.reply({ embeds: listEmbeds(p.name, l), ...quiet });
   }
 
   if (!isAllowed(i.user.id)) return i.reply({ content: "這個 bot 目前只回 PM，請直接找 PM。", flags: MessageFlags.Ephemeral });
@@ -647,7 +656,7 @@ async function cmdSchedule(i: ChatInputCommandInteraction) {
       channelId: ch?.id ?? i.channelId,
       createdBy: i.user.id,
     });
-    return i.reply({ content: `已排程\n${schedule.describe(s)}　→ <#${s.channelId}>`, ...quiet });
+    return i.reply({ embeds: [scheduleEmbed(s, "已排程")], ...quiet });
   }
 
   const s = schedule.get(p, i.options.getString("id", true));
@@ -656,20 +665,20 @@ async function cmdSchedule(i: ChatInputCommandInteraction) {
 
   if (sub === "remove") {
     schedule.remove(p, s.id);
-    return i.reply({ content: `🗑️ 取消排程 \`${s.id}\`：${s.text.slice(0, 100)}`, ...quiet });
+    return i.reply({ embeds: [removedEmbed(s)], ...quiet });
   }
   if (sub === "pause") {
-    return i.reply({ content: `已暫停\n${schedule.describe(schedule.pause(p, s.id))}`, ...quiet });
+    return i.reply({ embeds: [scheduleEmbed(schedule.pause(p, s.id), "已暫停")], ...quiet });
   }
   if (sub === "resume") {
-    return i.reply({ content: `已恢復\n${schedule.describe(schedule.resume(p, s.id))}`, ...quiet });
+    return i.reply({ embeds: [scheduleEmbed(schedule.resume(p, s.id), "已恢復")], ...quiet });
   }
   if (sub === "edit") {
     const when = i.options.getString("when") ?? undefined;
     const text = i.options.getString("text") ?? undefined;
     const kind = (i.options.getString("type") ?? undefined) as schedule.Schedule["kind"] | undefined;
     if (!when && !text && !kind) return i.reply({ content: "沒有要改的：when、text、type 至少給一個", flags: MessageFlags.Ephemeral });
-    return i.reply({ content: `已修改\n${schedule.describe(schedule.edit(p, s.id, { when, text, kind }))}`, ...quiet });
+    return i.reply({ embeds: [scheduleEmbed(schedule.edit(p, s.id, { when, text, kind }), "已修改")], ...quiet });
   }
   if (sub === "run") {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
