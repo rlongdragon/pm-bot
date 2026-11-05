@@ -12,6 +12,7 @@ import {
   Partials,
   PermissionFlagsBits,
   type Attachment,
+  type AutocompleteInteraction,
   type ChatInputCommandInteraction,
   type Message,
   type TextBasedChannel,
@@ -20,7 +21,8 @@ import { config, isAdmin, isAllowed } from "../config.js";
 import * as store from "../store.js";
 import { commitKnowledge, enqueue, ensureKnowledgeRepo, runAgent, type AgentResult } from "../agent.js";
 import { shutdownTraces } from "../trace.js";
-import { askPrompt, meetingPrompt, mentionPrompt, notePrompt, reviewPrompt } from "../prompts.js";
+import { askPrompt, meetingPrompt, mentionPrompt, notePrompt, reviewPrompt, scheduledPrompt } from "../prompts.js";
+import * as schedule from "../schedule.js";
 import { addLink, removeLink, syncLinks } from "../sources/index.js";
 import { appConfigured, installUrl } from "../sources/github-app.js";
 import { setOauthHint, sharedRoots } from "../sources/notion.js";
@@ -100,6 +102,8 @@ client.once("clientReady", () => {
     setInterval(() => void reviewDue(), 10 * 60_000);
     console.log(`[review] daily at ${config.reviewHour}:00`);
   }
+  setInterval(() => runSchedules(), 30_000);
+  runSchedules();
 });
 
 /* ---------- 工具 ---------- */
@@ -195,12 +199,12 @@ async function flushOutbox(p: store.Project) {
 }
 
 /** 跑 agent；成功就把這幾筆移出 pending 並 commit */
-async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label: string, opts: { session?: string; rawIds?: string[]; trace?: { userId?: string; channel?: string } } = {}) {
+async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label: string, opts: { session?: string; rawIds?: string[]; trace?: { userId?: string; channel?: string }; schedule?: { channelId: string; userId: string } } = {}) {
   const r: AgentResult = await enqueue(async () => {
     // 先同步外部來源（有變才抓），讓 agent 看到最新的 sources/
     const synced = await syncLinks(p);
     if (synced.changed) await commitKnowledge(`sync sources ${p.id}`);
-    const res = await runAgent(prompt, { project: p.id, mode, label: `${label}:${p.id}`, resume: opts.session ? store.getSession(p, opts.session) : undefined, trace: opts.trace });
+    const res = await runAgent(prompt, { project: p.id, mode, label: `${label}:${p.id}`, resume: opts.session ? store.getSession(p, opts.session) : undefined, trace: opts.trace, schedule: opts.schedule });
     if (!res.error && mode === "digest") {
       if (opts.rawIds?.length) store.removePending(p.id, opts.rawIds);
       const changed = await commitKnowledge(`${label} ${p.id}${opts.rawIds?.length ? " " + opts.rawIds.join(",") : ""}`);
@@ -232,7 +236,8 @@ async function say(
   files?: { attachment: string; name: string }[],
   opts: { ping?: boolean } = {},
 ): Promise<boolean> {
-  const allowedMentions = opts.ping ? undefined : { users: [] as string[] };
+  // ping 只 @ 個人和身分組，不讓 @everyone / @here 生效
+  const allowedMentions = opts.ping ? { parse: ["users" as const, "roles" as const] } : { users: [] as string[] };
   const ch = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
   if (ch && ch.isTextBased() && "send" in ch) {
     const ok = await ch.send({ content, files, allowedMentions }).then(() => true, (e) => (console.warn(`[say] ${channelId}: ${e.message}`), false));
@@ -486,7 +491,12 @@ client.on("messageCreate", async (msg) => {
     });
     store.touch(p, "lastRecordAt");
     const chId = resolveChannelId(ch);
-    const r = await runAndCommit(p, "digest", mentionPrompt(p, rawId, block), "mention", { session: `mention:${chId}`, rawIds: [rawId], trace: { userId: msg.author.id, channel: chId } });
+    const r = await runAndCommit(p, "digest", mentionPrompt(p, rawId, block), "mention", {
+      session: `mention:${chId}`,
+      rawIds: [rawId],
+      trace: { userId: msg.author.id, channel: chId },
+      schedule: { channelId: msg.channelId, userId: msg.author.id },
+    });
     await replyChunked(msg, r.error ? `出錯了，這則已經存成 raw ${rawId}，巡檢時會再整理一次。\n\`${r.error}\`` : r.text || "（沒有回覆）");
   } catch (e) {
     console.error("[mention] failed:", e);
@@ -528,9 +538,153 @@ async function reviewDue() {
   }
 }
 
+/* ---------- 排程 ---------- */
+
+/** 每 30 秒看一次有沒有到期的排程。takeDue 會先把狀態往前推再存檔，所以不會重複觸發 */
+function runSchedules() {
+  for (const p of store.activeProjects()) {
+    for (const s of schedule.takeDue(p)) void fireSchedule(p, s);
+  }
+}
+
+/** 觸發一個排程。manual = /schedule run，不算遲到 */
+async function fireSchedule(p: store.Project, s: schedule.Schedule, manual = false): Promise<boolean> {
+  const lateMin = manual ? 0 : Math.round((Date.now() - Date.parse(s.nextAt)) / 60_000);
+  const late = lateMin > 5 ? `\n-# 原定 ${schedule.fmtTime(s.nextAt)}，bot 當時沒在跑，晚了 ${lateMin} 分鐘` : "";
+  const tag = manual ? "（手動觸發）" : "";
+  try {
+    if (s.kind === "remind") {
+      const ok = await say(s.channelId, `⏰ ${s.text}${tag}${late}`.slice(0, 2000), s.createdBy, undefined, { ping: true });
+      schedule.setError(p, s.id, ok ? undefined : "貼不出去");
+      console.log(`[schedule] ${p.id}/${s.id} remind ${ok ? "sent" : "FAILED"}`);
+      return ok;
+    }
+    const r = await runAndCommit(p, "ask", scheduledPrompt(p, s.text, s.createdBy), `schedule-${s.id}`, { trace: { userId: s.createdBy, channel: s.channelId } });
+    const head = `🤖 **定時任務** \`${s.id}\`${tag}：${s.text.replace(/\n/g, " ").slice(0, 80)}${late}`;
+    const body = r.error ? `出錯：\`${r.error}\`` : r.text || "（沒有結果）";
+    let ok = true;
+    for (const c of splitDiscord(`${head}\n\n${body}`)) ok = (await say(s.channelId, c, s.createdBy, undefined, { ping: true })) && ok;
+    schedule.setError(p, s.id, r.error ?? (ok ? undefined : "貼不出去"));
+    console.log(`[schedule] ${p.id}/${s.id} agent ${r.error ? "ERR " + r.error : "done"}`);
+    return !r.error && ok;
+  } catch (e) {
+    console.error(`[schedule] ${p.id}/${s.id} failed:`, e);
+    schedule.setError(p, s.id, (e as Error).message);
+    return false;
+  }
+}
+
+const WHEN_PRESETS = ["+30m", "+1h", "+2h", "今天 17:00", "明天 9:00", "後天 9:00", "每天 9:00", "平日 9:00", "每週一 9:00", "每週五 17:00", "每週一三五 9:00", "每月 1 號 9:00"];
+const cut = (s: string, n = 100) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+/** /schedule 的 autocomplete：id 列出這個專案的排程；when 預覽下次觸發時間並給常用寫法 */
+async function onAutocomplete(i: AutocompleteInteraction) {
+  if (i.commandName !== "schedule") return i.respond([]);
+  const focused = i.options.getFocused(true);
+  const q = focused.value.trim();
+  const p = i.channel ? store.projectByChannel(resolveChannelId(i.channel)) : undefined;
+
+  if (focused.name === "id") {
+    if (!p) return i.respond([]);
+    const sub = i.options.getSubcommand();
+    const ql = q.toLowerCase();
+    const opts = schedule
+      .list(p)
+      .filter((s) => (sub === "pause" ? !s.paused : sub === "resume" ? !!s.paused : true))
+      .filter((s) => !ql || s.id.includes(ql) || s.text.toLowerCase().includes(ql) || s.when.includes(q))
+      .slice(0, 25)
+      .map((s) => ({
+        name: cut(`${s.kind === "remind" ? "⏰" : "🤖"} ${s.id} · ${s.paused ? "⏸️ 暫停" : schedule.fmtShort(s.nextAt)}${s.cron ? ` · ${s.when}` : ""} · ${s.text.replace(/\s+/g, " ")}`),
+        value: s.id,
+      }));
+    return i.respond(opts);
+  }
+
+  if (focused.name === "when") {
+    const out: { name: string; value: string }[] = [];
+    if (q) {
+      try {
+        out.push({ name: cut(`${q} → ${schedule.previewWhen(q)}`), value: cut(q) });
+      } catch (e) {
+        out.push({ name: cut(`⚠️ ${q}：${(e as Error).message.split("\n")[0]}`), value: cut(q) });
+      }
+    }
+    for (const w of WHEN_PRESETS) {
+      if (out.length >= 25) break;
+      if (w === q || (q && !w.includes(q) && !q.split(/\s+/).some((t) => t && w.includes(t)))) continue;
+      try {
+        out.push({ name: `${w} → ${schedule.previewWhen(w)}`, value: w });
+      } catch {} // 例如晚上的「今天 17:00」已經過了
+    }
+    return i.respond(out);
+  }
+  return i.respond([]);
+}
+
+async function cmdSchedule(i: ChatInputCommandInteraction) {
+  const p = needProject(i);
+  const sub = i.options.getSubcommand();
+  const quiet = { allowedMentions: { users: [] as string[] } };
+
+  if (sub === "list") {
+    const l = schedule.list(p);
+    if (!l.length) return i.reply({ content: "這個專案沒有排程。`/schedule add` 新增，或 @我 說「每週一 9 點整理週報」。", flags: MessageFlags.Ephemeral });
+    const chunks = splitDiscord(`**${p.name}** 的排程（${l.length}）\n` + l.map((s) => `${schedule.describe(s)}　→ <#${s.channelId}>`).join("\n"));
+    await i.reply({ content: chunks[0], ...quiet });
+    for (const c of chunks.slice(1)) await i.followUp({ content: c, ...quiet });
+    return;
+  }
+
+  if (!isAllowed(i.user.id)) return i.reply({ content: "這個 bot 目前只回 PM，請直接找 PM。", flags: MessageFlags.Ephemeral });
+
+  if (sub === "add") {
+    const ch = i.options.getChannel("channel");
+    if (ch && !p.channels.includes(ch.id)) throw new Error(`<#${ch.id}> 不在這個專案裡`);
+    const s = schedule.add(p, {
+      kind: i.options.getString("type", true) as schedule.Schedule["kind"],
+      when: i.options.getString("when", true),
+      text: i.options.getString("text", true),
+      channelId: ch?.id ?? i.channelId,
+      createdBy: i.user.id,
+    });
+    return i.reply({ content: `已排程\n${schedule.describe(s)}　→ <#${s.channelId}>`, ...quiet });
+  }
+
+  const s = schedule.get(p, i.options.getString("id", true));
+  if (!s) throw new Error(`找不到排程 \`${i.options.getString("id", true)}\`，\`/schedule list\` 看 id`);
+  if (s.createdBy !== i.user.id && !isAdmin(i.user.id)) return i.reply({ content: `這是 <@${s.createdBy}> 建的排程，只有他本人或管理員能改`, flags: MessageFlags.Ephemeral, ...quiet });
+
+  if (sub === "remove") {
+    schedule.remove(p, s.id);
+    return i.reply({ content: `🗑️ 取消排程 \`${s.id}\`：${s.text.slice(0, 100)}`, ...quiet });
+  }
+  if (sub === "pause") {
+    return i.reply({ content: `已暫停\n${schedule.describe(schedule.pause(p, s.id))}`, ...quiet });
+  }
+  if (sub === "resume") {
+    return i.reply({ content: `已恢復\n${schedule.describe(schedule.resume(p, s.id))}`, ...quiet });
+  }
+  if (sub === "edit") {
+    const when = i.options.getString("when") ?? undefined;
+    const text = i.options.getString("text") ?? undefined;
+    const kind = (i.options.getString("type") ?? undefined) as schedule.Schedule["kind"] | undefined;
+    if (!when && !text && !kind) return i.reply({ content: "沒有要改的：when、text、type 至少給一個", flags: MessageFlags.Ephemeral });
+    return i.reply({ content: `已修改\n${schedule.describe(schedule.edit(p, s.id, { when, text, kind }))}`, ...quiet });
+  }
+  if (sub === "run") {
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const ok = await fireSchedule(p, s, true);
+    return i.editReply(ok ? `跑完了，結果貼在 <#${s.channelId}>。排程時間不變。` : `沒有成功：${schedule.get(p, s.id)?.lastError ?? "看 log"}`);
+  }
+}
+
 /* ---------- 指令 ---------- */
 
 client.on("interactionCreate", async (i) => {
+  if (i.isAutocomplete()) {
+    await onAutocomplete(i).catch((e) => console.warn(`[discord] autocomplete /${i.commandName}: ${(e as Error).message}`));
+    return;
+  }
   if (i.isStringSelectMenu() && i.customId.startsWith(PICK_PREFIX)) {
     await onPick(i).catch((e) => {
       console.error("[discord] pick error:", e);
@@ -567,6 +721,8 @@ client.on("interactionCreate", async (i) => {
         return await cmdBoard(i);
       case "meet":
         return await cmdMeet(i);
+      case "schedule":
+        return await cmdSchedule(i);
     }
   } catch (e) {
     console.error("[discord] command error:", e);
@@ -617,7 +773,7 @@ function infoText(p: store.Project): string {
     `記錄 **${s.records}** 則　最後 ${fmtDate(p.lastRecordAt)}${s.pending ? `　⚠️ 待整理 ${s.pending}` : ""}`,
     `任務 進行中 **${s.openTasks}**　完成 **${s.doneTasks}**`,
     `決策 **${s.decisions}**　筆記 **${s.notes}**　附件 **${s.files}**　成員 **${s.people}**`,
-    `最後巡檢 ${fmtDate(p.lastReviewAt)}`,
+    `最後巡檢 ${fmtDate(p.lastReviewAt)}　排程 ${p.schedules?.length ?? 0} 個${p.schedules?.some((s) => s.lastError) ? "（⚠️ 有失敗，看 \`/schedule list\`）" : ""}`,
     `外部來源 ${p.links?.length ?? 0} 個${p.links?.some((l) => l.error) ? "（⚠️ 有錯誤，看 \`/link list\`）" : ""}　看板 ${p.board ? `[Notion](<${p.board.url}>)　更新 ${fmtDate(p.board.lastPushAt)}${p.board.error ? `　⚠️ ${p.board.error}` : ""}` : "未設定"}`,
     "",
     `其他頻道加入：\`/project join id:${p.id}\``,

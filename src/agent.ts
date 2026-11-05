@@ -4,7 +4,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { query, type Options, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "./config.js";
-import { allowRules, guardHook, TOOLS, type Mode } from "./sandbox.js";
+import { allowRules, guardHook, SCHEDULE_TOOLS, TOOLS, type Mode } from "./sandbox.js";
+import { scheduleServer } from "./schedule-tools.js";
 import { projectDir } from "./store.js";
 import { child, clip, flushTraces, setTraceAttrs, startTrace, type Obs } from "./trace.js";
 
@@ -42,6 +43,8 @@ export interface RunOpts {
   resume?: string;
   /** 只給監控用：誰觸發、在哪個頻道 */
   trace?: { userId?: string; channel?: string };
+  /** 給了就掛排程工具（只在 digest 模式），排程貼到這個頻道 */
+  schedule?: { channelId: string; userId: string };
 }
 
 /** 組 SDK options。抽出來是為了讓測試能單獨驗證每一層 */
@@ -50,11 +53,13 @@ export function buildOptions(o: RunOpts): Options {
   const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CONFIG_DIR: config.claudeConfigDir };
   // 訂閱登入靠 CLAUDE_CONFIG_DIR 的憑證；外層若有 API key 會蓋過去，拿掉
   if (!process.env.PM_USE_API_KEY) delete env.ANTHROPIC_API_KEY;
+  const sched = o.mode === "digest" && o.schedule;
 
   return {
     cwd,
     tools: TOOLS[o.mode],
-    allowedTools: allowRules(o.mode),
+    allowedTools: [...allowRules(o.mode), ...(sched ? SCHEDULE_TOOLS : [])],
+    ...(sched ? { mcpServers: { pm: scheduleServer(o.project, sched) } } : {}),
     disallowedTools: ["Bash", "Agent", "NotebookEdit", "WebSearch"],
     permissionMode: "dontAsk",
     // 不讀任何 settings / CLAUDE.md：agent 就算寫了 .claude/settings.json 也不會生效
@@ -66,7 +71,9 @@ export function buildOptions(o: RunOpts): Options {
         `\n\n# 工作範圍\n你的工作目錄是專案「${o.project}」的資料夾。只能讀這個資料夾裡的東西` +
         (o.mode === "digest" ? "，只能寫 STATE.md、decisions.md、people.md、outbox.md、log/、notes/。" : "。這是問答回合，不能寫任何檔案。") +
         `路徑一律用相對路徑。\n` +
-        `sources/ 是外部來源（GitHub、Notion）的唯讀副本，bot 會在你開始前同步好。引用時附原始網址。\n\n${rules()}`,
+        `sources/ 是外部來源（GitHub、Notion）的唯讀副本，bot 會在你開始前同步好。引用時附原始網址。\n` +
+        (sched ? `要定時提醒、定期做事（「週五 3 點提醒 Alice」「每週一整理週報」）用 schedule_add；查排程用 schedule_list、取消用 schedule_remove。排程不要寫進 STATE.md。\n` : "") +
+        `\n${rules()}`,
     },
     hooks: { PreToolUse: [guardHook(cwd, o.mode, o.label)] },
     maxTurns: config.maxTurns,

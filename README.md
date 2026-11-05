@@ -81,6 +81,7 @@ bot 只在它看得到、而且綁了專案的頻道工作。
 | `/review` | 立刻巡檢 | admin |
 | `/link add <url>` / `list` / `remove <id>` / `sync` / `github` / `notion` | 連 GitHub repo、Notion 頁面或資料庫（唯讀）；`github` 給 GitHub App 授權頁；`notion` 開 Notion 授權頁，勾的頁面自動連上 | admin（list、github 所有人） |
 | `/board set <Notion 頁面>` / `sync` / `off` | 在 Notion 建看板，STATE.md 有變就自動更新 | admin |
+| `/schedule add <type> <when> <text> [channel]` / `list` / `edit <id>` / `pause <id>` / `resume <id>` / `remove <id>` / `run <id>` | 定時提醒、週期性 agent 任務；`when`、`id` 有 autocomplete | ALLOWED_USER_IDS（list 所有人；改別人的要 admin） |
 | `/meet voice [channel]` / `google <url>` / `upload <file\|url>` / `stop` / `status` / `transcribe [nth]` | 錄會議、轉逐字稿 | ALLOWED_USER_IDS |
 
 admin 是 `ADMIN_USER_IDS`，留空等於 `ALLOWED_USER_IDS`。
@@ -94,6 +95,19 @@ admin 是 `ADMIN_USER_IDS`，留空等於 `ALLOWED_USER_IDS`。
 - 超過 7 天沒更新
 
 期限是「未定」「待確認」的不提醒；同一條任務提醒過，3 天內不再提醒。一次巡檢的提醒合併成一則，只 @ 今天到期或逾期的負責人。要向人確認的事，bot 直接寫在回覆裡，不會另外洗頻道。大多數日子巡檢結果是「無事」。
+
+## 排程
+
+兩種排程，都可以是一次性或週期性，到時間貼在建立時的頻道：
+
+- **提醒**：原文貼出，可以 @ 人。「週五下午三點提醒 @Alice 交報告」
+- **任務**：用唯讀模式跑 agent，讀筆記完成指定的事，把結果貼出來。「每週一 9 點整理上週進度」
+
+建立方式：直接 @bot 用講的（agent 會呼叫排程工具，也能查、能取消），或用 `/schedule add`。
+
+`when` 可以寫 `2026-11-07 15:00`、`11/7 15:00`、`明天 9:00`、`+30m`、`每天 9:00`、`平日 9:00`、`每週一三五 9:00`、`每月 1 號 9:00`，或 5 欄 cron。時間用伺服器時區；週期性沒寫時間預設 9:00。打字時 autocomplete 會預覽下次觸發時間。
+
+bot 停機時錯過的排程，開機後只補跑一次並註明晚了多久，不會一次補好幾輪。排程存在 `STATE_FILE`，不進筆記 git。每個專案最多 30 個。
 
 ## 知識庫結構
 

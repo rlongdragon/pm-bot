@@ -21,6 +21,9 @@ export const TOOLS: Record<Mode, string[]> = {
   ask: ["Read", "Glob", "Grep", "WebFetch"],
 };
 
+/** bot 自己提供的排程工具（in-process MCP），只有 digest 回合、而且有給頻道時才掛上 */
+export const SCHEDULE_TOOLS = ["mcp__pm__schedule_add", "mcp__pm__schedule_list", "mcp__pm__schedule_remove"];
+
 /** 第一層：權限規則。Edit(/x) 錨定在 cwd；dontAsk 下沒列到的寫入一律拒絕 */
 export function allowRules(mode: Mode): string[] {
   const rules = ["WebFetch"];
@@ -69,6 +72,8 @@ export interface GuardResult {
 
 /** 純函式，方便測試 */
 export function checkToolCall(root: string, mode: Mode, tool: string, input: Record<string, unknown>): GuardResult {
+  // 排程工具不碰檔案，輸入由 bot 驗證
+  if (SCHEDULE_TOOLS.includes(tool)) return mode === "digest" ? { ok: true } : { ok: false, reason: `${mode} 模式不能改排程` };
   if (!TOOLS[mode].includes(tool)) return { ok: false, reason: `${mode} 模式不允許工具 ${tool}` };
   const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : undefined);
 

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 import type { Link } from "./sources/types.js";
+import type { Schedule } from "./schedule.js";
 
 export interface Session {
   id: string;
@@ -32,6 +33,8 @@ export interface Project {
   links?: Link[];
   /** Notion 看板：bot 把 STATE.md 的任務推到這個資料庫 */
   board?: { databaseId: string; url: string; lastPushAt?: string; error?: string };
+  /** 排程：定時提醒、週期性 agent 任務 */
+  schedules?: Schedule[];
 }
 
 interface State {

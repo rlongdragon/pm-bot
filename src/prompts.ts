@@ -10,6 +10,7 @@ ${block}
 - 丟給你的是事實、結論、分工、期限、決定（例如「Alice 做登入頁」「下週三 demo」「決定用 FastAPI」「這個做完了」），就是要你記：依規則更新筆記，回一句說你記了什麼。
 - 「幫我記錄」「加入追蹤」「記一下」「更正」這類當然也是要記。要追蹤的在 STATE.md 進行中開一條任務；更正就改掉對應那一條，並說改了什麼。
 - 在問東西（有問號、問進度、問誰負責、問之前講過什麼）就只回答，**不要改任何檔案**。先看 STATE.md，不夠再 grep raw/、notes/、sources/，回答附 raw id。
+- 要你**在某個時間提醒**或**定期做某件事**（「週五下午三點提醒 Alice 交報告」「每週一早上整理上週進度」「取消那個提醒」），用 schedule_add / schedule_list / schedule_remove，回一句排了什麼、下次什麼時候。提醒要 @ 人就在 text 裡寫 <@id>（people.md 查得到）。只排程就不用改筆記。
 - 真的看不出來是哪一種才問「要幫你記錄嗎？」，不要常問。
 
 附件在 files/；Office 檔（pptx、docx、xlsx）旁邊有抽好的文字版 files/<檔名>.md，直接讀那份。專案連結的 GitHub（PR、issue、commit）和 Notion 內容在 sources/，問到這些先看 sources/。要向對方確認的直接寫在回覆裡問，不要寫 outbox.md（對方看得到你的回覆）。
@@ -55,4 +56,12 @@ ${block}
 2. 依規則更新 STATE.md、decisions.md、people.md。有明確負責人的待辦開成進行中任務，來源寫 raw ${rawId}；負責人或期限不明確的標「未定」或「待確認」；真的需要問的合併成一則寫 outbox.md，最多 3 個問題、不 @ 人。
 3. 閒聊和玩笑不要記。逐字稿是自動轉的，可能有錯字，人名或專有名詞看起來怪的照原樣留，不要自己改。
 4. 回覆三到五行：這場會的重點，以及你開了哪些任務。`;
+}
+
+export function scheduledPrompt(p: Project, task: string, by: string): string {
+  return `${head(p)}這是 <@${by}> 先前排好的定時任務，現在時間到了：
+
+${task}
+
+這是唯讀回合：讀 STATE.md、log/、notes/、raw/、sources/ 完成上面的工作，不能改檔案。結果會直接貼到頻道，要 @ 人就寫 <@id>。直接給結果，不要說「這是排程任務」這類開場，Discord markdown，最多 1500 字。`;
 }

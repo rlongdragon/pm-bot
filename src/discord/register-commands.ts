@@ -116,6 +116,41 @@ const commands = [
         .addStringOption((o) => o.setName("people").setDescription("與會者，用、或 , 分隔，幫模型標講者")),
     )
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("schedule")
+    .setDescription("定時提醒、週期性任務")
+    .addSubcommand((s) =>
+      s
+        .setName("add")
+        .setDescription("新增排程")
+        .addStringOption((o) =>
+          o
+            .setName("type")
+            .setDescription("提醒 = 到時貼出原文；任務 = 到時讓 agent 讀筆記做事，貼結果")
+            .setRequired(true)
+            .addChoices({ name: "提醒", value: "remind" }, { name: "任務（agent）", value: "agent" }),
+        )
+        .addStringOption((o) =>
+          o.setName("when").setDescription("11/7 15:00、明天 9:00、+30m、每天 9:00、平日 9:00、每週一 9:00、每月 1 號 9:00、cron").setRequired(true).setMaxLength(100).setAutocomplete(true),
+        )
+        .addStringOption((o) => o.setName("text").setDescription("提醒內容（可以 @人），或要 agent 做的事").setRequired(true).setMaxLength(1500))
+        .addChannelOption((o) => o.setName("channel").setDescription("貼到哪個頻道，留空 = 這裡（要在同一個專案）").addChannelTypes(ChannelType.GuildText)),
+    )
+    .addSubcommand((s) => s.setName("list").setDescription("列出這個專案的排程"))
+    .addSubcommand((s) =>
+      s
+        .setName("edit")
+        .setDescription("修改排程（沒填的欄位不動）")
+        .addStringOption((o) => o.setName("id").setDescription("要改哪個排程").setRequired(true).setAutocomplete(true))
+        .addStringOption((o) => o.setName("when").setDescription("新時間").setMaxLength(100).setAutocomplete(true))
+        .addStringOption((o) => o.setName("text").setDescription("新內容").setMaxLength(1500))
+        .addStringOption((o) => o.setName("type").setDescription("改種類").addChoices({ name: "提醒", value: "remind" }, { name: "任務（agent）", value: "agent" })),
+    )
+    .addSubcommand((s) => s.setName("pause").setDescription("暫停排程").addStringOption((o) => o.setName("id").setDescription("哪個排程").setRequired(true).setAutocomplete(true)))
+    .addSubcommand((s) => s.setName("resume").setDescription("恢復暫停的排程").addStringOption((o) => o.setName("id").setDescription("哪個排程").setRequired(true).setAutocomplete(true)))
+    .addSubcommand((s) => s.setName("remove").setDescription("刪除排程").addStringOption((o) => o.setName("id").setDescription("哪個排程").setRequired(true).setAutocomplete(true)))
+    .addSubcommand((s) => s.setName("run").setDescription("立刻跑一次（測試用，排程時間不變）").addStringOption((o) => o.setName("id").setDescription("哪個排程").setRequired(true).setAutocomplete(true)))
+    .toJSON(),
   new SlashCommandBuilder().setName("review").setDescription("立刻跑一次巡檢（期限、久未更新提醒）").toJSON(),
 ];
 
