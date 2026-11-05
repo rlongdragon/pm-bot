@@ -44,6 +44,17 @@ assert.deepEqual(
   { records: 3, open: 2, done: 1, dec: 1, notes: 1, pending: 0 },
 );
 
+// bot 的回答：存進 raw、不進 pending、不算記錄數
+const before = store.pendingIds(a.id).length;
+const { id: botId, block: botBlock } = store.appendRaw({
+  project: a.id, channelName: "pm", author: "PM bot", authorId: "999", text: "記下了：A 做登入頁", attachments: [], messageUrl: "https://x", bot: true, inReplyTo: "2026-10-13#1",
+});
+assert.match(botBlock, /^- \[\S+\] \S+ #pm 🤖 \*\*PM bot\*\*：記下了：A 做登入頁\n  回應 raw 2026-10-13#1\n/);
+assert.ok(!botBlock.includes("<@999>"), "bot 條目不放 mention");
+assert.equal(store.pendingIds(a.id).length, before, "bot 回答不進 pending");
+assert.ok(!store.pendingIds(a.id).includes(botId));
+assert.equal(store.stats(a.id).records, 3, "bot 回答不算記錄數");
+
 store.closeProject(a.id);
 assert.equal(store.projectByChannel("c1"), undefined, "結束的專案不再回應");
 assert.throws(() => store.joinChannel(a.id, "c3", false), /已結束/);

@@ -64,7 +64,7 @@ bot 只在它看得到、而且綁了專案的頻道工作。
 | reply bot 的回答再 @bot | 接著上一輪對話 |
 | 帶附件 @bot | 附件存進 `files/`；pptx、docx、xlsx 會抽成文字版給 agent 讀 |
 
-要記還是在問，由 agent 看意圖判斷，不用講出「記錄」兩個字；真的分不出來才會反問。被叫到的那則（含上下文）一律存成 raw，筆記裡每一條都引用 raw id。
+要記還是在問，由 agent 看意圖判斷，不用講出「記錄」兩個字；真的分不出來才會反問。被叫到的那則（含上下文）一律存成 raw，筆記裡每一條都引用 raw id。bot 的回答（@bot、`/note`、定時任務）也會存成 raw，標 🤖、不進待整理，所以問「你之前說了什麼」查得到；`/ask` 照舊不留紀錄。
 
 ## 指令
 
@@ -126,7 +126,7 @@ knowledge/
     notes/                研究成果、文字稿、會議紀錄            agent 可寫
     log/YYYY-MM-DD.md     每日摘要                              agent 可寫
     outbox.md             bot 要貼出去的話                      agent 可寫
-    raw/YYYY-MM-DD.md     頻道原文 append-only                  只有 bot 寫
+    raw/YYYY-MM-DD.md     頻道原文＋bot 的回答（🤖）append-only  只有 bot 寫
     files/                附件（含 Office 檔的文字版）          只有 bot 寫
     pending.md            待整理緩衝                            只有 bot 寫
     sources/              GitHub、Notion 副本                   只有 bot 寫

@@ -176,6 +176,9 @@ export function hhmm(d = new Date()) {
   return d.toLocaleTimeString("zh-TW", { hour12: false, hour: "2-digit", minute: "2-digit" });
 }
 
+/** raw 裡 bot 自己回答的標記 */
+export const BOT_MARK = "🤖";
+
 export interface RawEntry {
   project: string;
   channelName: string;
@@ -186,9 +189,13 @@ export interface RawEntry {
   messageUrl: string;
   /** 被回覆的訊息、上下文等，每行一條 */
   context?: string[];
+  /** bot 自己的回答：作者標 🤖，不進 pending（不是待整理的記錄） */
+  bot?: boolean;
+  /** bot 回答的是哪一筆 raw */
+  inReplyTo?: string;
 }
 
-/** 寫一筆到 raw 日誌 + pending；回傳 raw id 和寫進去的內容 */
+/** 寫一筆到 raw 日誌 + pending（bot 的回答不進 pending）；回傳 raw id 和寫進去的內容 */
 export function appendRaw(e: RawEntry): { id: string; block: string } {
   const date = today();
   const rawDir = path.join(projectDir(e.project), "raw");
@@ -198,12 +205,14 @@ export function appendRaw(e: RawEntry): { id: string; block: string } {
   const n = (fs.readFileSync(file, "utf8").match(/^- \[/gm) ?? []).length + 1;
   const id = `${date}#${n}`;
   const ind = (s: string) => s.replace(/\n/g, "\n  ");
-  let block = `- [${id}] ${hhmm()} #${e.channelName} **${e.author}**（<@${e.authorId}>）：${ind(e.text)}\n`;
+  const who = e.bot ? `${BOT_MARK} **${e.author}**` : `**${e.author}**（<@${e.authorId}>）`;
+  let block = `- [${id}] ${hhmm()} #${e.channelName} ${who}：${ind(e.text)}\n`;
+  if (e.inReplyTo) block += `  回應 raw ${e.inReplyTo}\n`;
   if (e.attachments.length) block += `  附件：${e.attachments.join("、")}\n`;
   for (const c of e.context ?? []) block += `  ${ind(c)}\n`;
   block += `  訊息連結：<${e.messageUrl}>\n`;
   fs.appendFileSync(file, block);
-  fs.appendFileSync(pendingPath(e.project), block);
+  if (!e.bot) fs.appendFileSync(pendingPath(e.project), block);
   return { id, block };
 }
 
@@ -281,7 +290,12 @@ export function stats(id: string): Stats {
   const dir = projectDir(id);
   let records = 0;
   try {
-    for (const f of fs.readdirSync(path.join(dir, "raw"))) records += (readOr(path.join(dir, "raw", f)).match(/^- \[/gm) ?? []).length;
+    // 只算人的記錄，不算 bot 的回答
+    const bot = new RegExp(`^- \\[[^\\]]+\\] \\S+ #.*? ${BOT_MARK} \\*\\*`, "gm");
+    for (const f of fs.readdirSync(path.join(dir, "raw"))) {
+      const t = readOr(path.join(dir, "raw", f));
+      records += (t.match(/^- \[/gm) ?? []).length - (t.match(bot) ?? []).length;
+    }
   } catch {}
   const st = readOr(path.join(dir, "STATE.md"));
   return {

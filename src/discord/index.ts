@@ -501,7 +501,8 @@ client.on("messageCreate", async (msg) => {
       trace: { userId: msg.author.id, channel: chId },
       schedule: { channelId: msg.channelId, userId: msg.author.id },
     });
-    await replyChunked(msg, r.error ? `出錯了，這則已經存成 raw ${rawId}，巡檢時會再整理一次。\n\`${r.error}\`` : r.text || "（沒有回覆）");
+    const sent = await replyChunked(msg, r.error ? `出錯了，這則已經存成 raw ${rawId}，巡檢時會再整理一次。\n\`${r.error}\`` : r.text || "（沒有回覆）");
+    if (!r.error && r.text) await recordBotReply(p, channelName(ch), r.text, sent.url, rawId);
   } catch (e) {
     console.error("[mention] failed:", e);
     await msg.reply(`出錯：${(e as Error).message}`).catch(() => {});
@@ -510,10 +511,34 @@ client.on("messageCreate", async (msg) => {
   }
 });
 
-async function replyChunked(msg: Message, text: string) {
+async function replyChunked(msg: Message, text: string): Promise<Message> {
   const chunks = splitDiscord(text);
-  await msg.reply({ content: chunks[0], allowedMentions: { repliedUser: true, users: [] } });
+  const first = await msg.reply({ content: chunks[0], allowedMentions: { repliedUser: true, users: [] } });
   for (const c of chunks.slice(1)) if ("send" in msg.channel) await msg.channel.send({ content: c, allowedMentions: { users: [] } });
+  return first;
+}
+
+/**
+ * bot 的回答也存進 raw，讓之後問「你上次說了什麼」查得到。不進 pending，巡檢不會把它當記錄整理。
+ * 失敗只記 log，不影響已經送出的回答。
+ */
+async function recordBotReply(p: store.Project, channel: string, text: string, url: string, inReplyTo?: string) {
+  try {
+    store.appendRaw({
+      project: p.id,
+      channelName: channel,
+      author: client.user?.username ?? "bot",
+      authorId: client.user?.id ?? "0",
+      text: text.slice(0, 4000),
+      attachments: [],
+      messageUrl: url,
+      inReplyTo,
+      bot: true,
+    });
+    await enqueue(() => commitKnowledge(`bot reply ${p.id}${inReplyTo ? " " + inReplyTo : ""}`));
+  } catch (e) {
+    console.warn(`[raw] ${p.id} 存 bot 回答失敗：${(e as Error).message}`);
+  }
 }
 
 /* ---------- 巡檢 ---------- */
@@ -576,6 +601,12 @@ async function fireSchedule(p: store.Project, s: schedule.Schedule, manual = fal
     const ok = await say(s.channelId, mentionsIn(s.text), s.createdBy, undefined, { ping: true, embeds });
     schedule.setError(p, s.id, r.error ?? (ok ? undefined : "貼不出去"));
     console.log(`[schedule] ${p.id}/${s.id} agent ${r.error ? "ERR " + r.error : "done"}`);
+    if (ok && !r.error && r.text) {
+      const ch = client.channels.cache.get(s.channelId);
+      const name = ch && "name" in ch && ch.name ? ch.name : s.channelId;
+      const guild = ch && "guildId" in ch ? ch.guildId : "@me";
+      await recordBotReply(p, name, `【定時任務 ${s.id}：${s.text.replace(/\s+/g, " ").slice(0, 100)}】\n${r.text}`, `https://discord.com/channels/${guild}/${s.channelId}`);
+    }
     return !r.error && ok;
   } catch (e) {
     console.error(`[schedule] ${p.id}/${s.id} failed:`, e);
@@ -884,7 +915,8 @@ async function cmdNote(i: ChatInputCommandInteraction) {
   });
   store.touch(p, "lastRecordAt");
   const r = await runAndCommit(p, "digest", notePrompt(p, rawId, block), "note", { rawIds: [rawId] });
-  await i.editReply({ content: `📝 raw ${rawId}　${r.error ? "整理出錯，巡檢時會再試：" + r.error : r.text}`.slice(0, 2000), allowedMentions: { users: [] } });
+  const sent = await i.editReply({ content: `📝 raw ${rawId}　${r.error ? "整理出錯，巡檢時會再試：" + r.error : r.text}`.slice(0, 2000), allowedMentions: { users: [] } });
+  if (!r.error && r.text) await recordBotReply(p, i.channel ? channelName(i.channel) : "?", r.text, sent.url, rawId);
 }
 
 async function cmdLink(i: ChatInputCommandInteraction) {
