@@ -600,6 +600,17 @@ async function onAutocomplete(i: AutocompleteInteraction) {
         .replace(/<@!?(\d+)>/g, (_, id) => "@" + (i.guild?.members.cache.get(id)?.displayName ?? i.client.users.cache.get(id)?.username ?? "成員"))
         .replace(/<@&(\d+)>/g, (_, id) => "@" + (i.guild?.roles.cache.get(id)?.name ?? "身分組"))
         .replace(/<#(\d+)>/g, (_, id) => "#" + ((i.guild?.channels.cache.get(id) as { name?: string } | undefined)?.name ?? "頻道"));
+    // 重啟後快取是空的：沒快取到的人用 REST 抓（不需要 GuildMembers intent），最多等 1.5 秒
+    if (i.guild) {
+      const miss = [...new Set(schedule.list(p).flatMap((s) => [...s.text.matchAll(/<@!?(\d+)>/g)].map((m) => m[1])))].filter(
+        (id) => !i.guild!.members.cache.has(id),
+      );
+      if (miss.length)
+        await Promise.race([
+          Promise.allSettled(miss.slice(0, 10).map((id) => i.guild!.members.fetch(id))),
+          new Promise((r) => setTimeout(r, 1500)),
+        ]);
+    }
     const opts = schedule
       .list(p)
       .filter((s) => (sub === "pause" ? !s.paused : sub === "resume" ? !!s.paused : true))
