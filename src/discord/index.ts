@@ -572,7 +572,8 @@ async function fireSchedule(p: store.Project, s: schedule.Schedule, manual = fal
       if (k < parts.length - 1) e.setFooter(null).setTimestamp(null);
       return e;
     });
-    const ok = await say(s.channelId, mentionsIn(body), s.createdBy, undefined, { ping: true, embeds });
+    // 只通知建立排程時指定的人（寫在任務內容裡的 @）；結果裡提到的人只顯示、不通知
+    const ok = await say(s.channelId, mentionsIn(s.text), s.createdBy, undefined, { ping: true, embeds });
     schedule.setError(p, s.id, r.error ?? (ok ? undefined : "貼不出去"));
     console.log(`[schedule] ${p.id}/${s.id} agent ${r.error ? "ERR " + r.error : "done"}`);
     return !r.error && ok;

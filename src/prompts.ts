@@ -63,5 +63,5 @@ export function scheduledPrompt(p: Project, task: string, by: string): string {
 
 ${task}
 
-這是唯讀回合：讀 STATE.md、log/、notes/、raw/、sources/ 完成上面的工作，不能改檔案。結果會直接貼到頻道，要 @ 人就寫 <@id>。直接給結果，不要說「這是排程任務」這類開場，Discord markdown，最多 1500 字。`;
+這是唯讀回合：讀 STATE.md、log/、notes/、raw/、sources/ 完成上面的工作，不能改檔案。結果會直接貼到頻道；提到人可以寫 <@id>，但不會通知對方（只有任務內容裡指定的人會收到通知）。直接給結果，不要說「這是排程任務」這類開場，Discord markdown，最多 1500 字。`;
 }

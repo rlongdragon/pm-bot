@@ -28,7 +28,7 @@ export function scheduleServer(projectId: string, ctx: { channelId: string; user
     tools: [
       tool(
         "schedule_add",
-        "排一個定時提醒或定時任務。到時間 bot 會貼在這個頻道。remind = 原文貼出（可以寫 <@id> 來 @ 人）；agent = 到時你會在唯讀模式下讀筆記做這件事，把結果貼出來（例如整理週報）。",
+        "排一個定時提醒或定時任務。到時間 bot 會貼在這個頻道。remind = 原文貼出；agent = 到時你會在唯讀模式下讀筆記做這件事，把結果貼出來（例如整理週報）。text 裡寫的 <@id> 就是到時要通知的人，只寫真的需要通知的；不需要通知就用名字，不要寫 <@id>。",
         {
           kind: z.enum(["remind", "agent"]).describe("remind：到時貼出 text；agent：到時讓你讀筆記完成 text 描述的工作"),
           when: z
