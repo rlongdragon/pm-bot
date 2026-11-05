@@ -73,6 +73,7 @@ export function buildOptions(o: RunOpts): Options {
         `路徑一律用相對路徑。\n` +
         `sources/ 是外部來源（GitHub、Notion）的唯讀副本，bot 會在你開始前同步好。引用時附原始網址。\n` +
         (sched ? `要定時提醒、定期做事（「週五 3 點提醒 Alice」「每週一整理週報」）用 schedule_add；查排程用 schedule_list、取消用 schedule_remove。排程不要寫進 STATE.md。\n` : "") +
+        `你的回覆和 outbox.md 會直接貼到 Discord：Discord 不支援 markdown 表格。內容長、含 @人或連結的不要用表格，改用列點（例如「- **Alice**　US-18 · 11/13」）；只有短欄位的小統計表可以用表格，bot 會排成等寬表。筆記檔裡照常用表格。\n` +
         `\n${rules()}`,
     },
     hooks: { PreToolUse: [guardHook(cwd, o.mode, o.label)] },

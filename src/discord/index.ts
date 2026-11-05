@@ -35,6 +35,7 @@ import { fmtDuration, sanitize, type Manifest } from "../meeting/session.js";
 import { transcribe, transcribeEnabled } from "../meeting/transcribe.js";
 import type { Mode } from "../sandbox.js";
 import { MeetingCard, renderCard } from "./meeting-card.js";
+import { formatTables } from "./format.js";
 import { firedEmbed, listEmbeds, mentionsIn, removedEmbed, scheduleEmbed } from "./schedule-embed.js";
 import { download, importAudio, parseImportText, parseWhen, MAX_UPLOAD_BYTES } from "../meeting/import.js";
 
@@ -187,8 +188,9 @@ export function splitDiscord(text: string, limit = 1900): string[] {
 
 /** 把 outbox 貼到主頻道（可以 @ 人）；主頻道發不出去就私訊管理員。都失敗就留著，下次再送 */
 async function flushOutbox(p: store.Project) {
-  const text = store.peekOutbox(p.id);
-  if (!text) return;
+  const raw = store.peekOutbox(p.id);
+  if (!raw) return;
+  const text = formatTables(raw);
   const chunks = splitDiscord(text);
   let sent = 0;
   for (const c of chunks) {
@@ -223,6 +225,7 @@ async function runAndCommit(p: store.Project, mode: Mode, prompt: string, label:
     return res;
   });
   if (opts.session && r.sessionId) store.setSession(p, opts.session, r.sessionId);
+  r.text = formatTables(r.text); // Discord 不渲染表格
   await flushOutbox(p);
   return r;
 }
@@ -818,7 +821,7 @@ async function cmdProject(i: ChatInputCommandInteraction) {
   }
   if (sub === "state") {
     const p = needProject(i);
-    const md = fs.readFileSync(path.join(store.projectDir(p.id), "STATE.md"), "utf8");
+    const md = formatTables(fs.readFileSync(path.join(store.projectDir(p.id), "STATE.md"), "utf8"));
     return i.reply({ content: splitDiscord(md)[0], ...quiet });
   }
 
