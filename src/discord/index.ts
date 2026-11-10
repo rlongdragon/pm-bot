@@ -16,6 +16,7 @@ import {
   type ChatInputCommandInteraction,
   type Message,
   type TextBasedChannel,
+  escapeMarkdown,
 } from "discord.js";
 import { config, isAdmin, isAllowed } from "../config.js";
 import * as store from "../store.js";
@@ -821,7 +822,7 @@ function infoText(p: store.Project): string {
   const s = store.stats(p.id);
   const status = p.status === "active" ? "🟢 進行中" : `⚫ 已結束（${fmtDate(p.closedAt)}）`;
   return [
-    `**${p.name}**　ID \`${p.id}\`　${status}`,
+    `**${escapeMarkdown(p.name)}**　ID \`${p.id}\`　${status}`,
     `建立 ${p.createdAt.slice(0, 10)}${p.createdBy ? ` by <@${p.createdBy}>` : ""}`,
     `頻道：${p.channels.map((c) => (c === p.primaryChannel ? `<#${c}>（主）` : `<#${c}>`)).join(" ") || "（沒有）"}`,
     "",
@@ -842,7 +843,7 @@ async function cmdProject(i: ChatInputCommandInteraction) {
   if (sub === "list") {
     const ps = store.projects();
     if (!ps.length) return i.reply({ content: "還沒有專案", flags: MessageFlags.Ephemeral });
-    const lines = ps.map((p) => `${p.status === "active" ? "🟢" : "⚫"} \`${p.id}\` **${p.name}**　${p.channels.map((c) => `<#${c}>`).join(" ") || "（沒有頻道）"}`);
+    const lines = ps.map((p) => `${p.status === "active" ? "🟢" : "⚫"} \`${p.id}\` **${escapeMarkdown(p.name)}**　${p.channels.map((c) => `<#${c}>`).join(" ") || "（沒有頻道）"}`);
     return i.reply({ content: lines.join("\n"), flags: MessageFlags.Ephemeral });
   }
   if (sub === "info") {
@@ -862,27 +863,27 @@ async function cmdProject(i: ChatInputCommandInteraction) {
 
   if (sub === "new") {
     const cur = store.projectByChannel(ch);
-    if (cur) throw new Error(`這個頻道已經在專案 **${cur.name}**（\`${cur.id}\`）裡，先 \`/project exit\``);
+    if (cur) throw new Error(`這個頻道已經在專案 **${escapeMarkdown(cur.name)}**（\`${cur.id}\`）裡，先 \`/project exit\``);
     const p = store.createProject(i.options.getString("name", true), i.user.id);
     store.joinChannel(p.id, ch, true);
     await commitKnowledge(`new project ${p.id} ${p.name}`);
     return i.reply({
-      content: `🟢 開了專案 **${p.name}**，ID \`${p.id}\`。<#${ch}> 是主頻道。\n平常對話我不會聽。@我 並說「幫我記錄」「加入追蹤」才會記；直接 @我 問問題我只回答。reply 某句話再 @我，我會連前後文一起看。\n其他頻道加入：\`/project join id:${p.id}\`` + permWarning(i),
+      content: `🟢 開了專案 **${escapeMarkdown(p.name)}**，ID \`${p.id}\`。<#${ch}> 是主頻道。\n平常對話我不會聽。@我 並說「幫我記錄」「加入追蹤」才會記；直接 @我 問問題我只回答。reply 某句話再 @我，我會連前後文一起看。\n其他頻道加入：\`/project join id:${p.id}\`` + permWarning(i),
       ...quiet,
     });
   }
   if (sub === "join") {
     const p = store.joinChannel(i.options.getString("id", true), ch, i.options.getBoolean("primary") ?? false);
-    return i.reply({ content: `🔗 <#${ch}> 加入 **${p.name}**（\`${p.id}\`）${p.primaryChannel === ch ? "，設為主頻道" : ""}` + permWarning(i), ...quiet });
+    return i.reply({ content: `🔗 <#${ch}> 加入 **${escapeMarkdown(p.name)}**（\`${p.id}\`）${p.primaryChannel === ch ? "，設為主頻道" : ""}` + permWarning(i), ...quiet });
   }
   if (sub === "exit") {
     const p = store.exitChannel(ch);
-    return i.reply(p ? `🔓 <#${ch}> 離開 **${p.name}**（\`${p.id}\`）。已記錄的資料保留。` : "這個頻道本來就不在專案裡");
+    return i.reply(p ? `🔓 <#${ch}> 離開 **${escapeMarkdown(p.name)}**（\`${p.id}\`）。已記錄的資料保留。` : "這個頻道本來就不在專案裡");
   }
   if (sub === "close") {
     const p = store.closeProject(i.options.getString("id", true));
     await commitKnowledge(`close project ${p.id}`);
-    return i.reply({ content: `⚫ **${p.name}**（\`${p.id}\`）已結束。不再回應、不再提醒，資料保留在 \`knowledge/${p.id}/\`。`, ...quiet });
+    return i.reply({ content: `⚫ **${escapeMarkdown(p.name)}**（\`${p.id}\`）已結束。不再回應、不再提醒，資料保留在 \`knowledge/${p.id}/\`。`, ...quiet });
   }
 }
 
@@ -1165,7 +1166,7 @@ async function cmdReview(i: ChatInputCommandInteraction) {
   if (!isAdmin(i.user.id)) return i.reply({ content: "沒權限", flags: MessageFlags.Ephemeral });
   const p = needProject(i);
   await i.deferReply({ flags: MessageFlags.Ephemeral });
-  await i.editReply(`巡檢 **${p.name}**：${await reviewProject(p, "manual")}`.slice(0, 2000));
+  await i.editReply(`巡檢 **${escapeMarkdown(p.name)}**：${await reviewProject(p, "manual")}`.slice(0, 2000));
 }
 
 /* ---------- Notion 授權 callback ---------- */
@@ -1205,7 +1206,7 @@ async function linkAuthorized(ctx: AuthContext, workspace: string) {
   };
   try {
     const menu = await pageMenu(p, ctx.userId);
-    if (menu) await send(`<@${ctx.userId}> Notion「${workspace}」授權好了，選要連到 **${p.name}** 的頁面：`, [menu]);
+    if (menu) await send(`<@${ctx.userId}> Notion「${workspace}」授權好了，選要連到 **${escapeMarkdown(p.name)}** 的頁面：`, [menu]);
     else await send(`<@${ctx.userId}> Notion「${workspace}」授權好了，但沒有新勾的頁面。再 \`/link notion\` 重新授權、多勾幾頁（別的專案已經勾過的頁面不會算到這裡）。`);
   } catch (e) {
     await send(`<@${ctx.userId}> Notion 授權好了，但讀頁面清單失敗：${(e as Error).message}`);

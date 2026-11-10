@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { escapeMarkdown } from "discord.js";
 import { config } from "./config.js";
 import type { Link } from "./sources/types.js";
 import type { Schedule } from "./schedule.js";
@@ -131,7 +132,7 @@ export function joinChannel(id: string, channelId: string, primary: boolean): Pr
   const p = mustGet(id);
   if (p.status !== "active") throw new Error(`專案 \`${p.id}\` 已結束`);
   const other = projectByChannel(channelId);
-  if (other && other.id !== p.id) throw new Error(`這個頻道已經在專案 **${other.name}**（\`${other.id}\`）裡，先 \`/project exit\``);
+  if (other && other.id !== p.id) throw new Error(`這個頻道已經在專案 **${escapeMarkdown(other.name)}**（\`${other.id}\`）裡，先 \`/project exit\``);
   if (!p.channels.includes(channelId)) p.channels.push(channelId);
   if (primary || !p.primaryChannel) p.primaryChannel = channelId;
   save();
